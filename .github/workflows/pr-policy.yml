@@ -1,0 +1,68 @@
+name: PR Policy
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  validate:
+    name: Validate contribution policy
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate branch, labels, and approved issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          branch=$(jq -r '.pull_request.head.ref' "$GITHUB_EVENT_PATH")
+          branch_pattern='^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)/[a-z0-9._-]+$'
+          if [[ ! "$branch" =~ $branch_pattern ]]; then
+            echo "Invalid branch name: $branch"
+            exit 1
+          fi
+
+          mapfile -t type_labels < <(
+            jq -r '.pull_request.labels[].name | select(startswith("type:"))' \
+              "$GITHUB_EVENT_PATH"
+          )
+          if (( ${#type_labels[@]} != 1 )); then
+            echo "Expected exactly one type:* label; found ${#type_labels[@]}."
+            exit 1
+          fi
+
+          body=$(jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH")
+          mapfile -t closing_references < <(
+            grep -ioE '(^|[[:space:]])(closes|fixes|resolves)[[:space:]]+#[0-9]+' \
+              <<< "$body" || true
+          )
+          if (( ${#closing_references[@]} == 0 )); then
+            echo "PR body must contain Closes, Fixes, or Resolves #N."
+            exit 1
+          fi
+          issue_number=${closing_references[0]##*#}
+
+          if ! issue_json=$(gh api \
+            --method GET \
+            -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/issues/${issue_number}"); then
+            echo "Linked issue #$issue_number is not valid in this repository."
+            exit 1
+          fi
+          if ! jq -e '
+            .state == "open" and
+            (has("pull_request") | not) and
+            any(.labels[]; .name == "status:approved")
+          ' <<< "$issue_json" >/dev/null; then
+            echo "Linked issue #$issue_number must be open and carry status:approved."
+            exit 1
+          fi
+
+          echo "Contribution policy passed for approved issue #$issue_number."
