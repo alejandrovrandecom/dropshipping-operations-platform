@@ -1,0 +1,51 @@
+name: Feature request
+description: Propose a scoped improvement.
+title: "feat: "
+labels: [enhancement, "status:needs-review"]
+body:
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I have searched existing issues and this is not a duplicate.
+          required: true
+        - label: I understand this issue needs status:approved before a PR can be opened.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem description
+      description: Describe the pain point and who it affects.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Explain how the feature should work from the user's perspective.
+    validations:
+      required: true
+  - type: dropdown
+    id: affected-area
+    attributes:
+      label: Affected area
+      options:
+        - Scripts
+        - Skills
+        - Examples
+        - Documentation
+        - CI/Workflows
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe other approaches or current workarounds.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add mockups, examples, or references.
