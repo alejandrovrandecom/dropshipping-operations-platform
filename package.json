@@ -8,6 +8,16 @@
     "db:start": "npx --yes supabase start",
     "db:stop": "npx --yes supabase stop",
     "db:reset": "bash scripts/db-reset.sh",
-    "db:smoke": "bash scripts/db-smoke.sh"
+    "db:smoke": "bash scripts/db-smoke.sh",
+    "db:types": "npx --yes supabase gen types typescript --local --schema public",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.86.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.6",
+    "pg": "^8.16.3",
+    "vitest": "^3.2.4"
   }
 }

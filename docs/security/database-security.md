@@ -3,7 +3,8 @@
 Tenant isolation is enforced in the database, not in application code. Row level
 security plus composite foreign keys are the wall; the client is never trusted.
 
-**Status**: skeleton. Policy and function inventories fill in with each slice.
+**Status**: identity slice enforced. Table-by-table policy and grant inventories
+live in `docs/database/architecture.md` and are updated with every migration.
 
 ## Quick path
 
@@ -35,13 +36,37 @@ value appears in tracked files or in a `NEXT_PUBLIC_*` variable.
 
 - Grants are explicit per table and per operation; no blanket `GRANT ALL`.
 - `auto_expose_new_tables = false` keeps new objects unreachable by default.
+- Default privileges differ by creator. Migrations run as `postgres`, whose
+  `public` default ACL gives `anon`/`authenticated`/`service_role` only
+  `TRUNCATE/REFERENCES/TRIGGER/MAINTAIN` — no data access. But `supabase_admin`'s
+  default ACL still grants `ALL`, so a table created through Studio ships
+  world-readable. That is a second reason schema changes must be migrations.
+- Migrations still `revoke` explicitly before granting, so a table stays closed
+  even if those defaults change. `anon` holds no privilege on any table today.
+- `service_role` also has no data privileges here; server-side code that needs
+  them must be granted them explicitly and deliberately.
+- Prefer column grants over table grants. A column the client must never set —
+  such as `teams.owner_user_id` — is simply never granted, so forgery fails at
+  the privilege layer before RLS is even consulted.
 
 ## `SECURITY DEFINER` checklist
 
-- [ ] `SET search_path = ''`
-- [ ] All references schema-qualified
-- [ ] `REVOKE EXECUTE ... FROM PUBLIC`
-- [ ] Explicit `GRANT EXECUTE` to the intended role only
+- [x] `SET search_path = ''`
+- [x] All references schema-qualified
+- [x] `REVOKE EXECUTE ... FROM PUBLIC`
+- [x] Explicit `GRANT EXECUTE` to the intended role only
+
+## Enforced denials
+
+`tests/isolation/rls.test.ts` proves each boundary against the live local stack:
+anonymous read/write, a correctly signed but expired token, outsider reads and
+writes, forged `owner_user_id`, a membership written into an unowned team, and a
+plain member attempting owner governance.
+
+**Gotcha.** `insert ... returning` evaluates the `select` policy before
+after-insert triggers run. A read policy that depends on a row written by such a
+trigger must also admit the creator directly, or the writer cannot read back the
+row it just created.
 
 ## Environments and audit
 

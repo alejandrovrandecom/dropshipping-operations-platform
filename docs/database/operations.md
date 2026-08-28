@@ -28,6 +28,7 @@ pnpm db:smoke   # verify artifacts, secret protection, and clean rebuild
 | `pnpm db:start` / `pnpm db:stop` | Controls the local containers. |
 | `pnpm db:reset` | Destroys local data and rebuilds from migrations. |
 | `pnpm db:smoke` | Runs the smoke check; add `--require-runtime` in CI. |
+| `pnpm test` | Runs the Vitest suites against the running local stack. |
 
 ## Changing the schema
 
@@ -41,6 +42,11 @@ pnpm db:smoke   # verify artifacts, secret protection, and clean rebuild
 `pnpm db:smoke` reports each check as PASS, FAIL, or SKIP. A skipped clean
 rebuild means the container runtime or stack was unavailable — it is never
 counted as a pass.
+
+`pnpm test` runs the tenant-isolation suite. It needs the stack up (`pnpm
+db:setup`) and reads credentials from `supabase status -o env` at run time, so
+no key is ever committed. Run it after `pnpm db:reset` to confirm the boundary
+still holds on a database rebuilt only from `supabase/migrations/`.
 
 ## Backup and restore
 
