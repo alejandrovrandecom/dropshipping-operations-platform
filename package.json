@@ -1,0 +1,13 @@
+{
+  "name": "control-base",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.20.0",
+  "scripts": {
+    "db:setup": "bash scripts/db-setup.sh",
+    "db:start": "npx --yes supabase start",
+    "db:stop": "npx --yes supabase stop",
+    "db:reset": "bash scripts/db-reset.sh",
+    "db:smoke": "bash scripts/db-smoke.sh"
+  }
+}
