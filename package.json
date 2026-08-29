@@ -10,6 +10,7 @@
     "db:reset": "bash scripts/db-reset.sh",
     "db:smoke": "bash scripts/db-smoke.sh",
     "db:types": "printf '%s\\n' \"$(npx --yes supabase gen types typescript --local --schema public)\"",
+    "db:functions": "npx --yes supabase functions serve --env-file supabase/functions/local.env",
     "test": "vitest run"
   },
   "dependencies": {
