@@ -9,7 +9,7 @@
     "db:stop": "npx --yes supabase stop",
     "db:reset": "bash scripts/db-reset.sh",
     "db:smoke": "bash scripts/db-smoke.sh",
-    "db:types": "npx --yes supabase gen types typescript --local --schema public",
+    "db:types": "printf '%s\\n' \"$(npx --yes supabase gen types typescript --local --schema public)\"",
     "test": "vitest run"
   },
   "dependencies": {

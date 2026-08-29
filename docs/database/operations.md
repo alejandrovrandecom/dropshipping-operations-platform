@@ -43,7 +43,7 @@ pnpm db:smoke   # verify artifacts, secret protection, and clean rebuild
 rebuild means the container runtime or stack was unavailable — it is never
 counted as a pass.
 
-`pnpm test` runs the tenant-isolation suite. It needs the stack up (`pnpm
+`pnpm test` runs the isolation and reproducibility suites, and the second one resets the database before it asserts. It needs the stack up (`pnpm
 db:setup`) and reads credentials from `supabase status -o env` at run time, so
 no key is ever committed. Run it after `pnpm db:reset` to confirm the boundary
 still holds on a database rebuilt only from `supabase/migrations/`.
