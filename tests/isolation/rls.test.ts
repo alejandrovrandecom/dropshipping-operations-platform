@@ -2,9 +2,12 @@
 // from the design's RED-first denial matrix and must fail closed in the
 // database, not in application code.
 import { beforeAll, describe, expect, it } from "vitest";
-import { anonClient, clientWithToken, expiredToken, signIn, sql, uniqueEmail } from "../support/local-stack";
+import { anonClient, clientWithToken, expiredToken, signIn, sql, tamperedToken, uniqueEmail } from "../support/local-stack";
 
 type Actor = Awaited<ReturnType<typeof signIn>>;
+
+/** Well-formed but unissued invitation token used consistently across session states. */
+const UNKNOWN_TOKEN = "0".repeat(64);
 
 let owner: Actor;
 let member: Actor;
@@ -41,6 +44,22 @@ describe("unauthenticated and expired sessions", () => {
     const { data, error } = await stale.from("teams").select("id");
     expect(error).not.toBeNull();
     expect(data).toBeNull();
+    expect((await stale.from("teams").insert({ name: "stale session" }).select()).error).not.toBeNull();
+    const validRpc = await owner.client.rpc("accept_invitation", { token: UNKNOWN_TOKEN });
+    const expiredRpc = await stale.rpc("accept_invitation", { token: UNKNOWN_TOKEN });
+    expect({ status: validRpc.status, code: validRpc.error?.code }).toEqual({ status: 400, code: "22023" });
+    expect({ status: expiredRpc.status, code: expiredRpc.error?.code }).toEqual({ status: 401, code: "PGRST303" });
+  });
+
+  // The valid `exp` matters: it proves the denial comes from signature verification, not from expiry.
+  it("rejects an unexpired token whose signature does not verify", async () => {
+    const forged = clientWithToken(tamperedToken(owner.userId));
+    const { data, error } = await forged.from("teams").select("id");
+    expect(error).not.toBeNull();
+    expect(data).toBeNull();
+    expect((await forged.from("teams").insert({ name: "forged session" }).select()).error).not.toBeNull();
+    const forgedRpc = await forged.rpc("accept_invitation", { token: UNKNOWN_TOKEN });
+    expect({ status: forgedRpc.status, code: forgedRpc.error?.code }).toEqual({ status: 401, code: "PGRST301" });
   });
 });
 
@@ -96,5 +115,28 @@ describe("owner governance", () => {
     expect(removed.error).toBeNull();
     expect(removed.data).toHaveLength(1);
     expect((await member.client.from("teams").select("id").eq("id", teamId)).data ?? []).toEqual([]);
+  });
+});
+
+// Removal is authorization, not session state: the cutoff must be immediate and team-local, so a
+// still-valid session keeps every team it was not removed from. Dedicated actors, because the
+// governance case above consumes `member`.
+describe("membership removal", () => {
+  it("cuts off the removed team on the very next request and leaves the other team intact", async () => {
+    const dual = await signIn(uniqueEmail("dual"));
+    const [kept, dropped] = [await createTeam(owner, "Kept team"), await createTeam(owner, "Dropped team")];
+    for (const team of [kept, dropped])
+      await sql("insert into public.memberships (team_id, user_id) values ($1, $2)", [team, dual.userId]);
+    const visible = async (): Promise<string[]> =>
+      ((await dual.client.from("teams").select("id").in("id", [kept, dropped])).data ?? []).map((row) => row.id).sort();
+    expect(await visible()).toEqual([kept, dropped].sort());
+
+    await sql("delete from public.memberships where team_id = $1 and user_id = $2", [dropped, dual.userId]);
+
+    // Same client, same unexpired JWT: the next request re-evaluates against live membership.
+    expect(await visible()).toEqual([kept]);
+    expect((await dual.client.from("memberships").select("user_id").eq("team_id", dropped)).data ?? []).toEqual([]);
+    expect((await dual.client.from("memberships").insert({ team_id: dropped, user_id: dual.userId }).select()).error).not.toBeNull();
+    expect((await dual.client.from("memberships").select("user_id").eq("team_id", kept)).data).toHaveLength(2);
   });
 });

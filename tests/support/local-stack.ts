@@ -39,15 +39,25 @@ export const clientWithToken = (accessToken: string): SupabaseClient =>
     global: { headers: { Authorization: `Bearer ${accessToken}` } },
   });
 
-/** Mints a correctly signed token that expired an hour ago. */
-export function expiredToken(userId: string): string {
+const TOKEN_LIFETIME_SECONDS = 3600;
+
+/** Mints a one-hour token for `userId` expiring `expiresInSeconds` from now, signed with `secret`. */
+function mintToken(userId: string, expiresInSeconds: number, secret: string): string {
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
-  const now = Math.floor(Date.now() / 1000);
+  const exp = Math.floor(Date.now() / 1000) + expiresInSeconds;
   const body = `${encode({ alg: "HS256", typ: "JWT" })}.${encode({
-    sub: userId, role: "authenticated", aud: "authenticated", iat: now - 7200, exp: now - 3600,
+    sub: userId, role: "authenticated", aud: "authenticated", iat: exp - TOKEN_LIFETIME_SECONDS, exp,
   })}`;
-  return `${body}.${createHmac("sha256", env.JWT_SECRET).update(body).digest("base64url")}`;
+  return `${body}.${createHmac("sha256", secret).update(body).digest("base64url")}`;
 }
+
+/** A correctly signed token that expired an hour ago. */
+export const expiredToken = (userId: string): string =>
+  mintToken(userId, -TOKEN_LIFETIME_SECONDS, env.JWT_SECRET);
+
+/** Structurally valid and unexpired, but signed with the wrong secret: only the signature fails. */
+export const tamperedToken = (userId: string): string =>
+  mintToken(userId, TOKEN_LIFETIME_SECONDS, `${env.JWT_SECRET}-tampered`);
 
 /** Creates a confirmed user and returns a client carrying that user's verified JWT. */
 export async function signIn(email: string): Promise<{ client: SupabaseClient; userId: string }> {

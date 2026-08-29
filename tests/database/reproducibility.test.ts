@@ -54,6 +54,7 @@ const INVENTORY: Array<[string, string, string[]]> = [
     'create_invitation: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'ensure_owner_membership: secdef=true config=search_path="" acl=postgres=X/postgres',
     'handle_new_user: secdef=true config=search_path="" acl=postgres=X/postgres',
+    'handle_user_email_change: secdef=true config=search_path="" acl=postgres=X/postgres',
     'hash_invitation_token: secdef=false config=search_path="" acl=postgres=X/postgres',
     'is_team_member: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'is_team_owner: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres']],
@@ -76,7 +77,7 @@ it("references every object in a definer body through a schema qualifier", async
   // relation target -- `from`, `join`, `insert into`, `update` -- while skipping `do update set`
   // and plpgsql's `returning ... into <variable>`, neither of which names a relation.
   const bodies = await facts("select prosrc as fact from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'");
-  expect(bodies).toHaveLength(7);
+  expect(bodies).toHaveLength(8);
   for (const body of bodies)
     for (const [, ref] of body.matchAll(/\b(?:from|join|insert\s+into|update)\s+(?!set\b)([a-z_][\w.]*)/gi)) expect(ref).toContain(".");
 });
