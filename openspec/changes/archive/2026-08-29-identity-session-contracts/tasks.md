@@ -4,7 +4,7 @@
 
 | Field | Value |
 |---|---|
-| Exact chained review total | 1,142 changed lines across four PRs |
+| Exact chained review total | 1,164 changed lines across four PRs |
 | 400-line budget risk | Resolved by four PRs, each below the 400-line maximum |
 | Chained PRs | Required |
 | Delivery strategy | chained PRs |
@@ -21,7 +21,7 @@ All four PRs target `main` and merge strictly in order.
 | 1 | OpenSpec bootstrap + exploration + proposal | 308 | `main` | None |
 | 2 | Durable baseline spec + archived delta spec, design, and tasks | 313 | `main` | PR 1 merged |
 | 3 | Implementation + completed task-checkbox delta | 222 | `main` | PR 2 merged |
-| 4 | Apply, verification, and archive evidence | 314 | `main` | PR 3 merged |
+| 4 | Apply, verification, and archive evidence | 321 | `main` | PR 3 merged |
 
 ## Phase 1: RED Contract Tests
 
