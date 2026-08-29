@@ -28,6 +28,7 @@ pnpm db:smoke   # verify artifacts, secret protection, and clean rebuild
 | `pnpm db:start` / `pnpm db:stop` | Controls the local containers. |
 | `pnpm db:reset` | Destroys local data and rebuilds from migrations. |
 | `pnpm db:smoke` | Runs the smoke check; add `--require-runtime` in CI. |
+| `pnpm db:functions` | Serves the Edge Functions with `supabase/functions/local.env`, so invitation mail is captured to the log instead of sent. |
 | `pnpm test` | Runs the Vitest suites against the running local stack. |
 
 ## Changing the schema
