@@ -91,7 +91,7 @@ Preserved invariants: `profiles` grants stay `select` + `update (display_name)`,
 
 No data migration; already-stale rows self-heal on the next confirmed change. Rollback is a forward migration dropping only the trigger and function — profile values, RLS, and grants untouched, no session state to unwind.
 
-**Forecast**: Pre-implementation estimate: ~120 changed lines; actual approved PR3 implementation + completion-delta slice: 207 changed lines, within the 400-line budget.
+**Forecast**: Pre-implementation estimate: ~120 changed lines; actual approved PR3 implementation + completion-delta slice: 222 changed lines, within the 400-line budget.
 
 ## Open Questions
 

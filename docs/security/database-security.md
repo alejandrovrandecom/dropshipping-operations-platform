@@ -17,6 +17,9 @@ live in `docs/database/architecture.md` and are updated with every migration.
 | Boundary | Expected behavior |
 |---|---|
 | Anonymous request | No rows readable; writes rejected. |
+| Expired JWT | Table reads and writes are denied; the RPC is rejected with HTTP 401. |
+| Signature-tampered JWT | Same; the test token's `exp` is still valid, isolating signature verification. |
+| Membership removed | The same session's **next** request loses that team, without a global sign-out. |
 | Authenticated non-member | Another team's rows are invisible and unwritable. |
 | Forged `team_id` in payload | Rejected by policy; payload filters, never authorizes. |
 | Browser bundle | Contains no privileged key. |
@@ -66,6 +69,30 @@ owner's own address, so it is test-only. Production readiness requires domain ve
 SPF, DKIM and DMARC records, provider secrets in a server-side secret store, and evidence of a
 real delivery. No Resend dependency or credential exists in this repository today.
 
+## Session validity
+
+A session is valid only while its JWT verifies and has not expired; **authorization is a separate
+question, re-answered from live database state on every request.** No session table, no cached role.
+
+| Question | Where it is answered |
+|---|---|
+| Is this caller authenticated? | JWT signature and `exp`, verified before the request reaches RLS. |
+| May this caller touch this team? | `is_team_member` / `is_team_owner`, evaluated per statement. |
+
+Two consequences follow, and both are proven, not assumed:
+
+- **Removal is immediate and team-local.** Deleting a membership takes effect on that session's next
+  request, because the policy re-reads `memberships`. It revokes nothing else: the same session keeps
+  every other team it still belongs to.
+- **A confirmed email change moves invitation identity with the account.** `profiles.email` is
+  mirrored from `auth.users.email` (see `docs/database/architecture.md`), and `profiles.email` is
+  never client-writable — `authenticated` holds `update (display_name)` only.
+
+**Deferred, and deliberately not implemented here.** Forced session revocation and a revocation
+policy; account recovery pages and emails; device, current-device and all-device sign-out;
+remembered-login UX; any new identity API or combined "who am I" read contract; login rate limiting
+or lockout beyond Supabase defaults; production email-provider setup. Define each before building it.
+
 ## `SECURITY DEFINER` checklist
 
 - [x] `SET search_path = ''`
@@ -76,11 +103,16 @@ real delivery. No Resend dependency or credential exists in this repository toda
 ## Enforced denials
 
 `tests/isolation/rls.test.ts` proves each boundary against the live local stack:
-anonymous read/write, a correctly signed but expired token, outsider reads and
-writes, forged `owner_user_id`, a membership written into an unowned team, and a
-plain member attempting owner governance. `tests/identity/invitations.test.ts` adds the
-invitation boundary: non-owner and cross-team issuing, and expired, reused, wrong-recipient,
-unauthenticated and tampered acceptance.
+anonymous read/write; a correctly signed but expired token and an unexpired token with a forged
+signature, both denied on read and write, with their RPC calls specifically rejected by PostgREST
+at HTTP 401. The RPC control sends the same unknown invitation token through a valid session and
+reaches the function's distinct HTTP 400 / SQLSTATE `22023` rejection. The suite also proves the
+two-team removal cutoff; outsider reads and writes; forged `owner_user_id`; a membership written
+into an unowned team; and a plain member attempting owner governance.
+`tests/identity/invitations.test.ts` adds the
+invitation boundary: non-owner and cross-team issuing, expired, reused, wrong-recipient,
+unauthenticated and tampered acceptance, and confirmed-email synchronization — a pending request
+stays inert, another account's profile is untouched, and the previous address stops matching.
 
 **Gotcha.** `insert ... returning` evaluates the `select` policy before
 after-insert triggers run. A read policy that depends on a row written by such a

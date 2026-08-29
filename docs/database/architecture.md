@@ -14,7 +14,7 @@ change it through a new forward migration and update this file.
 
 ```mermaid
 erDiagram
-  auth_users ||--|| profiles : "mirrored by trigger"
+  auth_users ||--|| profiles : "mirrored on signup and on confirmed email change"
   profiles ||--o{ teams : owns
   teams ||--o{ memberships : has
   profiles ||--o{ memberships : joins
@@ -47,6 +47,7 @@ Applied migrations are immutable. Corrections ship as new forward migrations.
 |---|---|---|
 | `20260828170000_identity` | Identity tables, forced RLS, policies, least-privilege grants, helper and trigger functions | Drop the three tables, four functions and two triggers; nothing else depends on them yet. |
 | `20260828210000_team_invitations` | `team_invitations`, forced RLS, owner-only read/delete policies, and the hash, issue and accept functions | Drop the table and its three functions; memberships already granted stay valid. |
+| `20260829120000_profile_email_sync` | `handle_user_email_change()` and the `auth.users` email trigger that mirrors a confirmed address into `profiles.email` | Ship a forward migration dropping **only** the trigger and the function. No table, column, policy, grant or profile value changes, and there is no session state to unwind. |
 
 ## RLS and grant matrix
 
@@ -69,6 +70,7 @@ Supabase's default blanket grant before issuing the explicit grants above.
 | `is_team_member(uuid)` | `security definer` helper | `''` | `authenticated` |
 | `is_team_owner(uuid)` | `security definer` helper | `''` | `authenticated` |
 | `handle_new_user()` | `security definer` trigger on `auth.users` | `''` | nobody — trigger only |
+| `handle_user_email_change()` | `security definer` trigger on `auth.users` | `''` | nobody — trigger only |
 | `ensure_owner_membership()` | `security definer` trigger on `public.teams` | `''` | nobody — trigger only |
 | `hash_invitation_token(text)` | `security invoker`, `immutable` | `''` | nobody — internal only |
 | `create_invitation(uuid, text)` | `security definer` RPC, owner-only | `''` | `authenticated` |
@@ -76,6 +78,13 @@ Supabase's default blanket grant before issuing the explicit grants above.
 
 The helpers are `security definer` on purpose: the `memberships` read policy calls
 `is_team_member`, which reads `memberships`. Definer rights break that recursion.
+
+`handle_user_email_change()` fires `after update of email on auth.users`, so it mirrors a
+**confirmed** address only: Supabase Auth parks a requested address in `auth.users.email_change`
+and promotes it to `auth.users.email` only after verification. Its `update ... where user_id =
+new.id` is account-local, cannot create a profile, and no-ops when none exists. Both `auth.users`
+triggers are `security definer` for the same reason: they run as `supabase_auth_admin`, which holds
+no privilege on `public.profiles` and cannot pass its forced RLS.
 
 `create_invitation` returns the plaintext token once and stores only its SHA-256 hash.
 `accept_invitation` consumes an invitation with a single conditional `update` — unaccepted,
