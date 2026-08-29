@@ -64,7 +64,7 @@ Ship a forward rollback migration removing only the email-sync trigger/function.
 | 1 | OpenSpec bootstrap + exploration + proposal | 308 |
 | 2 | Durable baseline spec + archived delta spec, design, and tasks | 313 |
 | 3 | Implementation + completed task-checkbox delta | 222 |
-| 4 | Apply, verification, and archive evidence | 314 |
+| 4 | Apply, verification, and archive evidence | 321 |
 
 All four PRs target `main` and merge in order: PR 1 → PR 2 → PR 3 → PR 4.
 
