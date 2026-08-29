@@ -1,0 +1,55 @@
+schema: spec-driven
+
+context: |
+  Product: multi-tenant dropshipping operations SaaS.
+  Stack: TypeScript, Vitest, Supabase (Postgres, Auth, RLS, Edge Functions).
+  Architecture: modular monolith with migrations as the database source of truth.
+  Security: tenant isolation is enforced at the database boundary.
+  Tests: serial local-Supabase integration/security/reproducibility suites.
+  Package manager: pnpm 10.20.0.
+
+strict_tdd: true
+
+testing:
+  test_runner:
+    framework: Vitest 3.2.7
+    command: pnpm test
+  layers:
+    unit: false
+    integration: true
+    e2e: false
+  coverage:
+    available: false
+    command: ""
+  quality:
+    linter: ""
+    type_checker: ""
+    formatter: ""
+  supplemental:
+    database_smoke: pnpm db:smoke --require-runtime
+
+rules:
+  proposal:
+    - State intent, scope, out-of-scope work, risks, and rollback for risky changes.
+    - Keep proposed work within the 400-line review budget or explicitly split it.
+  specs:
+    - Use RFC 2119 keywords and Given/When/Then scenarios.
+    - Specify authorization and tenant-boundary behavior at the database boundary.
+  design:
+    - Record rationale and threat-model denial paths for security-sensitive changes.
+    - Preserve the modular-monolith dependency direction.
+  tasks:
+    - Group tasks by phase with hierarchical numbering.
+    - Keep each task completable in one interactive session.
+  apply:
+    guidelines:
+      - Follow existing TypeScript, Supabase migration, and serial Vitest patterns.
+      - Do not put privileged keys in browser code or committed files.
+    tdd: true
+    test_command: pnpm test
+  verify:
+    test_command: pnpm test
+    build_command: pnpm db:smoke --require-runtime
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas.
