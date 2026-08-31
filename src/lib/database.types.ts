@@ -9,6 +9,295 @@ export type Json =
 export type Database = {
   public: {
     Tables: {
+      launch_checklist_items: {
+        Row: {
+          checklist_id: string
+          created_at: string
+          created_by: string
+          id: string
+          is_complete: boolean
+          is_required: boolean
+          label: string
+          position: number
+          team_id: string
+        }
+        Insert: {
+          checklist_id: string
+          created_at?: string
+          created_by?: string
+          id?: string
+          is_complete?: boolean
+          is_required?: boolean
+          label: string
+          position?: number
+          team_id: string
+        }
+        Update: {
+          checklist_id?: string
+          created_at?: string
+          created_by?: string
+          id?: string
+          is_complete?: boolean
+          is_required?: boolean
+          label?: string
+          position?: number
+          team_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "launch_checklist_items_checklist_fkey"
+            columns: ["team_id", "checklist_id"]
+            isOneToOne: false
+            referencedRelation: "launch_checklists"
+            referencedColumns: ["team_id", "id"]
+          },
+          {
+            foreignKeyName: "launch_checklist_items_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+        ]
+      }
+      launch_checklist_template_items: {
+        Row: {
+          created_at: string
+          created_by: string
+          id: string
+          is_required: boolean
+          label: string
+          position: number
+          team_id: string
+          template_id: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string
+          id?: string
+          is_required?: boolean
+          label: string
+          position?: number
+          team_id: string
+          template_id: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string
+          id?: string
+          is_required?: boolean
+          label?: string
+          position?: number
+          team_id?: string
+          template_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "launch_checklist_template_items_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "launch_checklist_template_items_template_fkey"
+            columns: ["team_id", "template_id"]
+            isOneToOne: false
+            referencedRelation: "launch_checklist_templates"
+            referencedColumns: ["team_id", "id"]
+          },
+        ]
+      }
+      launch_checklist_templates: {
+        Row: {
+          created_at: string
+          created_by: string
+          id: string
+          is_default: boolean
+          name: string
+          team_id: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string
+          id?: string
+          is_default?: boolean
+          name: string
+          team_id: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string
+          id?: string
+          is_default?: boolean
+          name?: string
+          team_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "launch_checklist_templates_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "launch_checklist_templates_team_fkey"
+            columns: ["team_id"]
+            isOneToOne: false
+            referencedRelation: "teams"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      launch_checklists: {
+        Row: {
+          created_at: string
+          created_by: string
+          id: string
+          launch_id: string
+          origin_template_id: string | null
+          team_id: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string
+          id?: string
+          launch_id: string
+          origin_template_id?: string | null
+          team_id: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string
+          id?: string
+          launch_id?: string
+          origin_template_id?: string | null
+          team_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "launch_checklists_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "launch_checklists_launch_fkey"
+            columns: ["team_id", "launch_id"]
+            isOneToOne: false
+            referencedRelation: "launches"
+            referencedColumns: ["team_id", "id"]
+          },
+          {
+            foreignKeyName: "launch_checklists_origin_template_fkey"
+            columns: ["team_id", "origin_template_id"]
+            isOneToOne: false
+            referencedRelation: "launch_checklist_templates"
+            referencedColumns: ["team_id", "id"]
+          },
+        ]
+      }
+      launch_events: {
+        Row: {
+          actor_user_id: string
+          created_at: string
+          from_status: Database["public"]["Enums"]["launch_status"] | null
+          kind: Database["public"]["Enums"]["launch_event_kind"]
+          launch_id: string
+          seq: number
+          team_id: string
+          to_status: Database["public"]["Enums"]["launch_status"] | null
+        }
+        Insert: {
+          actor_user_id?: string
+          created_at?: string
+          from_status?: Database["public"]["Enums"]["launch_status"] | null
+          kind: Database["public"]["Enums"]["launch_event_kind"]
+          launch_id: string
+          seq?: never
+          team_id: string
+          to_status?: Database["public"]["Enums"]["launch_status"] | null
+        }
+        Update: {
+          actor_user_id?: string
+          created_at?: string
+          from_status?: Database["public"]["Enums"]["launch_status"] | null
+          kind?: Database["public"]["Enums"]["launch_event_kind"]
+          launch_id?: string
+          seq?: never
+          team_id?: string
+          to_status?: Database["public"]["Enums"]["launch_status"] | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "launch_events_actor_fkey"
+            columns: ["actor_user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "launch_events_launch_fkey"
+            columns: ["team_id", "launch_id"]
+            isOneToOne: false
+            referencedRelation: "launches"
+            referencedColumns: ["team_id", "id"]
+          },
+        ]
+      }
+      launches: {
+        Row: {
+          created_at: string
+          created_by: string
+          id: string
+          name: string
+          notes: string | null
+          prior_status: Database["public"]["Enums"]["launch_status"] | null
+          status: Database["public"]["Enums"]["launch_status"]
+          team_id: string
+          url: string | null
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string
+          id?: string
+          name: string
+          notes?: string | null
+          prior_status?: Database["public"]["Enums"]["launch_status"] | null
+          status?: Database["public"]["Enums"]["launch_status"]
+          team_id: string
+          url?: string | null
+        }
+        Update: {
+          created_at?: string
+          created_by?: string
+          id?: string
+          name?: string
+          notes?: string | null
+          prior_status?: Database["public"]["Enums"]["launch_status"] | null
+          status?: Database["public"]["Enums"]["launch_status"]
+          team_id?: string
+          url?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "launches_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "launches_team_fkey"
+            columns: ["team_id"]
+            isOneToOne: false
+            referencedRelation: "teams"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       memberships: {
         Row: {
           created_at: string
@@ -159,16 +448,40 @@ export type Database = {
     }
     Functions: {
       accept_invitation: { Args: { token: string }; Returns: string }
+      apply_checklist_template: {
+        Args: { p_launch_id: string; p_template_id: string }
+        Returns: string
+      }
       create_invitation: {
         Args: { invitee_email: string; target_team_id: string }
+        Returns: string
+      }
+      create_launch: {
+        Args: { p_launch_id: string; p_name: string; p_team_id: string }
         Returns: string
       }
       hash_invitation_token: { Args: { token: string }; Returns: string }
       is_team_member: { Args: { target_team_id: string }; Returns: boolean }
       is_team_owner: { Args: { target_team_id: string }; Returns: boolean }
+      restore_launch: {
+        Args: { p_launch_id: string }
+        Returns: Database["public"]["Enums"]["launch_status"]
+      }
+      set_default_checklist_template: {
+        Args: { p_team_id: string; p_template_id: string }
+        Returns: string
+      }
+      transition_launch: {
+        Args: {
+          p_launch_id: string
+          p_next: Database["public"]["Enums"]["launch_status"]
+        }
+        Returns: Database["public"]["Enums"]["launch_status"]
+      }
     }
     Enums: {
-      [_ in never]: never
+      launch_event_kind: "created" | "transitioned" | "checklist_applied"
+      launch_status: "preparing" | "active" | "archived" | "discarded" | "trash"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -295,6 +608,9 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      launch_event_kind: ["created", "transitioned", "checklist_applied"],
+      launch_status: ["preparing", "active", "archived", "discarded", "trash"],
+    },
   },
 } as const

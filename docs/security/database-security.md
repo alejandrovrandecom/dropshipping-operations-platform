@@ -3,8 +3,9 @@
 Tenant isolation is enforced in the database, not in application code. Row level
 security plus composite foreign keys are the wall; the client is never trusted.
 
-**Status**: identity slice enforced. Table-by-table policy and grant inventories
-live in `docs/database/architecture.md` and are updated with every migration.
+**Status**: identity and launch-workspace slices enforced. Table-by-table policy
+and grant inventories live in `docs/database/architecture.md` and are updated
+with every migration.
 
 ## Quick path
 
@@ -26,6 +27,11 @@ live in `docs/database/architecture.md` and are updated with every migration.
 | Repository | Contains no real secret value. |
 | Stolen, replayed or expired invitation | Rejected with one uniform message; the team is unchanged. |
 | Unconfigured mail provider | The send fails loudly; no invitation is issued and no delivery is claimed. |
+| Guessed or forged launch id | Answered exactly like another tenant's real id: `42501` with identical text, so nothing is disclosed. |
+| Direct write to a launch status, snapshot or event | Refused: no insert or update grant exists on those columns or tables. |
+| Attempt to purge one launch, snapshot or event | Refused: no launch table grants `delete` to anyone. |
+| Cross-team template application | Refused with `22023`; the launch stays snapshot-free. |
+| Retried launch creation after a lost response | Answered with the caller's own launch: the caller-supplied id is the idempotency key, so no duplicate launch and no second `created` event appear. A retry naming another team's or another member's id is refused with the same opaque `42501`. |
 
 ## Key handling
 
@@ -113,6 +119,23 @@ into an unowned team; and a plain member attempting owner governance.
 invitation boundary: non-owner and cross-team issuing, expired, reused, wrong-recipient,
 unauthenticated and tampered acceptance, and confirmed-email synchronization — a pending request
 stays inert, another account's profile is untouched, and the previous address stops matching.
+
+`tests/isolation/launch-rls.test.ts` proves the launch boundary across all six launch tables at
+once, because a boundary that holds for `launches` but leaks through `launch_checklist_items` is
+not a boundary: anonymous reads and RPC calls, cross-team reads and updates, templates and items
+planted into another team, a forged tenant key on an item pointing at a foreign template, direct
+writes to launches, snapshots, snapshot items and events, the absence of any delete path for both
+a member and the team owner, the ungrantable `is_default` column, and the identical `42501`
+answer for an unknown id and another team's id across all five RPCs.
+`tests/database/launch-{lifecycle,templates,history,retention}.test.ts` prove the behavior those
+denials protect, including that whole-team deletion is the only destructive path and that a
+non-owner's attempt leaves every launch, template, snapshot and event in place.
+
+**Rollback is forward-only here.** Closing the launch surface means shipping a *new* migration that
+revokes the six table grants and the five `execute` privileges — never editing the applied file and
+never dropping the tables, which hold user data. `tests/database/reproducibility.test.ts` executes
+that exact revoke inside a block that always aborts, so the rollback path is proven and undone in
+the same statement.
 
 **Gotcha.** `insert ... returning` evaluates the `select` policy before
 after-insert triggers run. A read policy that depends on a row written by such a
