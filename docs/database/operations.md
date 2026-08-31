@@ -36,7 +36,19 @@ pnpm db:smoke   # verify artifacts, secret protection, and clean rebuild
 1. Create a migration: `npx supabase migration new <name>`.
 2. Write forward-only SQL; never edit an applied migration.
 3. Run `pnpm db:reset` and confirm a clean rebuild.
-4. Update `docs/database/architecture.md` and the security doc in the same PR.
+4. Regenerate the committed types: `pnpm -s db:types > src/lib/database.types.ts`.
+5. Update `docs/database/architecture.md` and the security doc in the same PR.
+
+## Undoing a shipped change
+
+There is no `down` migration. To withdraw a capability, ship a **new** migration
+that revokes its grants and `execute` privileges, which closes the surface while
+retaining every row.
+
+Dropping a table is a separate, deliberate decision about user data, not a
+rollback. For the launch slice specifically, `trash` plus `restore_launch`
+already provide recoverable removal, and owner-only whole-team deletion is the
+one destructive path.
 
 ## Verification
 
@@ -44,10 +56,16 @@ pnpm db:smoke   # verify artifacts, secret protection, and clean rebuild
 rebuild means the container runtime or stack was unavailable — it is never
 counted as a pass.
 
-`pnpm test` runs the isolation and reproducibility suites, and the second one resets the database before it asserts. It needs the stack up (`pnpm
-db:setup`) and reads credentials from `supabase status -o env` at run time, so
-no key is ever committed. Run it after `pnpm db:reset` to confirm the boundary
-still holds on a database rebuilt only from `supabase/migrations/`.
+`pnpm test` runs the behavioral, isolation and reproducibility suites, and the
+reproducibility one resets the database before it asserts. It needs the stack up
+(`pnpm db:setup`) and reads credentials from `supabase status -o env` at run
+time, so no key is ever committed. Run it after `pnpm db:reset` to confirm the
+boundary still holds on a database rebuilt only from `supabase/migrations/`.
+
+The suites share one local database, so `vitest` runs files serially
+(`fileParallelism: false` in `vitest.config.ts`). Keep it that way: the
+reproducibility suite resets the database, which would destroy a parallel
+suite's fixtures mid-run.
 
 ## Backup and restore
 
