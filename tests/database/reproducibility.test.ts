@@ -88,12 +88,17 @@ const INVENTORY: Array<[string, string, string[]]> = [
     'claim_username: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'create_invitation: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'create_launch: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
+    // The gate's two halves are ungranted on purpose: the enforcer is reachable only as a trigger,
+    // and the predicate would otherwise be a self-status oracle with no caller in this contract.
+    'enforce_username_claim: secdef=true config=search_path="" acl=postgres=X/postgres',
     'ensure_owner_membership: secdef=true config=search_path="" acl=postgres=X/postgres',
     'handle_new_user: secdef=true config=search_path="" acl=postgres=X/postgres',
     'handle_user_email_change: secdef=true config=search_path="" acl=postgres=X/postgres',
+    'has_username: secdef=true config=search_path="" acl=postgres=X/postgres',
     'hash_invitation_token: secdef=false config=search_path="" acl=postgres=X/postgres',
     'is_team_member: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'is_team_owner: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
+    'resolve_team_usernames: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'restore_launch: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'set_default_checklist_template: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'transition_launch: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres']],
@@ -145,6 +150,26 @@ const INVENTORY: Array<[string, string, string[]]> = [
     join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = 'public' and c.relname = 'username_reservations' order by 1`, [
     "username_reservations_pkey/unique", "username_reservations_user_id_key/unique"]],
+  // The gate is ten statement-level triggers and nothing else, so this is the whole of it. The
+  // definitions are compared verbatim: a trigger dropped, narrowed to a row, moved to `after`,
+  // pointed at another function, or widened past `display_name` on `profiles` fails right here.
+  // `teams` insert and delete are gated twice over -- once directly, and once through the
+  // memberships write that the owner-membership trigger and the delete cascade each perform. That
+  // is defense in depth and is kept deliberately, which is why the row trigger is inventoried too.
+  ["trigger inventory", `select pg_catalog.pg_get_triggerdef(t.oid) as fact from pg_trigger t
+    join pg_class c on c.oid = t.tgrelid join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and not t.tgisinternal order by c.relname, t.tgname`, [
+    "CREATE TRIGGER launch_checklist_items_require_username BEFORE INSERT OR UPDATE ON public.launch_checklist_items FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
+    "CREATE TRIGGER launch_checklist_template_items_require_username BEFORE INSERT OR UPDATE ON public.launch_checklist_template_items FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
+    "CREATE TRIGGER launch_checklist_templates_require_username BEFORE INSERT OR UPDATE ON public.launch_checklist_templates FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
+    "CREATE TRIGGER launch_checklists_require_username BEFORE INSERT OR UPDATE ON public.launch_checklists FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
+    "CREATE TRIGGER launch_events_require_username BEFORE INSERT OR UPDATE ON public.launch_events FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
+    "CREATE TRIGGER launches_require_username BEFORE INSERT OR UPDATE ON public.launches FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
+    "CREATE TRIGGER memberships_require_username BEFORE INSERT OR DELETE ON public.memberships FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
+    "CREATE TRIGGER profiles_require_username BEFORE UPDATE OF display_name ON public.profiles FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
+    "CREATE TRIGGER team_invitations_require_username BEFORE INSERT OR DELETE OR UPDATE ON public.team_invitations FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
+    "CREATE TRIGGER teams_ensure_owner_membership AFTER INSERT ON public.teams FOR EACH ROW EXECUTE FUNCTION ensure_owner_membership()",
+    "CREATE TRIGGER teams_require_username BEFORE INSERT OR DELETE OR UPDATE ON public.teams FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()"]],
 ];
 it.each(INVENTORY)("matches the documented %s", async (_label, query, expected) => {
   expect(await facts(query)).toEqual(expected);
@@ -164,7 +189,7 @@ it("references every object in a definer body through a schema qualifier", async
   // relation target -- `from`, `join`, `insert into`, `update` -- while skipping `do update set`
   // and plpgsql's `returning ... into <variable>`, neither of which names a relation.
   const bodies = await facts("select prosrc as fact from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'");
-  expect(bodies).toHaveLength(14);
+  expect(bodies).toHaveLength(17);
   for (const body of bodies)
     for (const [, ref] of body.matchAll(/\b(?:from|join|insert\s+into|update)\s+(?!set\b)([a-z_][\w.]*)/gi)) expect(ref).toContain(".");
 });
@@ -212,6 +237,31 @@ it("closes the claim through a forward revoke that never drops the registry", as
     pg_catalog.has_function_privilege('authenticated', p.oid, 'execute')::text as fact
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public' and p.proname = 'claim_username'`)).toEqual(["claim_username=true"]);
+});
+it("reopens the gate through a symmetric rollback that leaves the registry standing", async () => {
+  // The claim's rollback is asymmetric because a reservation is permanent; the gate's is not.
+  // Dropping the ten triggers and revoking the resolver restores the exact pre-gate schema, so a
+  // future migration can undo this slice completely. As above, the block proves the path, then aborts.
+  await expect(sql(`do $$
+    declare gate record;
+    begin
+      for gate in select c.relname as tbl, t.tgname as trg from pg_trigger t
+        join pg_class c on c.oid = t.tgrelid where t.tgname like '%require_username'
+      loop execute pg_catalog.format('drop trigger %I on public.%I', gate.trg, gate.tbl); end loop;
+      revoke execute on function public.resolve_team_usernames(uuid) from authenticated;
+      if exists (select 1 from pg_trigger where tgname like '%require_username') then
+        raise exception 'rollback left a gate trigger behind';
+      end if;
+      if pg_catalog.to_regclass('public.username_reservations') is null then
+        raise exception 'rollback must never drop the registry';
+      end if;
+      raise exception 'symmetric rollback verified';
+    end $$;`)).rejects.toThrow("symmetric rollback verified");
+
+  // The aborted block put all ten triggers back, and the resolver grant with them.
+  expect(await facts("select count(*)::text as fact from pg_trigger where tgname like '%require_username'")).toEqual(["10"]);
+  expect(await facts(`select pg_catalog.has_function_privilege('authenticated',
+    'public.resolve_team_usernames(uuid)', 'execute')::text as fact`)).toEqual(["true"]);
 });
 it("closes the launch surface through a forward revoke, leaving applied migrations untouched", async () => {
   // Rollback here is forward-only: a *new* migration revokes the grants and the execute privilege,
