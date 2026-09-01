@@ -50,6 +50,29 @@ rollback. For the launch slice specifically, `trash` plus `restore_launch`
 already provide recoverable removal, and owner-only whole-team deletion is the
 one destructive path.
 
+### Username reservation and gate
+
+The two username migrations withdraw independently, and they are not alike:
+
+| Migration | Withdraw by | Symmetric? |
+|---|---|---|
+| `20260901130000_username_gate` | Dropping the ten `*_require_username` triggers and revoking `execute` on `resolve_team_usernames(uuid)` | Yes — the schema returns to exactly its pre-gate state |
+| `20260901120000_username_reservation` | Revoking `execute` on `claim_username(text)` only | No — **never drop `username_reservations`** |
+
+The asymmetry is the contract, not an oversight. A reservation exists to outlive
+the account that made it, so dropping the registry would release names that were
+promised to be permanent. Withdraw the gate first if both are being withdrawn:
+the gate depends on the registry, never the reverse.
+
+### Adopting the contract locally
+
+There is no backfill. The gate denies every protected write by a confirmed
+account that holds no claim, so an account created before these migrations must
+either claim a username or be recreated. Locally and in test, run `pnpm db:reset`
+and recreate accounts. `tests/support/local-stack.ts` reflects this: `signIn`
+claims a username by default, and callers that need the usernameless account pass
+`false`.
+
 ## Verification
 
 `pnpm db:smoke` reports each check as PASS, FAIL, or SKIP. A skipped clean
