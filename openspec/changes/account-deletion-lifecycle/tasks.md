@@ -11,8 +11,8 @@ Chained PRs recommended: Yes
 Chain strategy: stacked-to-main
 400-line budget risk: High
 
-Types excluded; snapshots include them. No `size:exception` is planned.
-Combined PR3 evidence (399-line green; `sha256:c3cf34b070a4ad783f46b0cc1e910337d8e35f8a9a185607e08e508441db7e1b`) remains historical/failed: no retry bound. It will be re-carved across pending Phase 4 (PR3a) and Phase 5 (PR3b).
+`size:exception`: **PR3a alone**, maintainer-approved at 415 native changed lines / 253 authored implementation lines. **PR3b and PR4 retain the 400-line budget and carry no exception**; the exception does not travel down the chain.
+Combined PR3 evidence (399-line green; `sha256:c3cf34b070a4ad783f46b0cc1e910337d8e35f8a9a185607e08e508441db7e1b`) remains historical/failed: no retry bound. It is re-carved; Phase 4 (PR3a) is complete and Phase 5 (PR3b) is not started.
 
 ### Suggested Work Units
 
@@ -44,9 +44,9 @@ Each pending unit independently runs its listed focus, full `pnpm test`, and run
 
 ## Phase 4: PR3a Claim Ledger
 
-- [ ] 4.1 **RED:** Extend `tests/database/account-deletion-finalization.test.ts` for `pending`/`failed` claims: exactly three executions (initial + two retries), fourth refused, and no finalize surface in this slice; add `tests/isolation/account-deletion-rls.test.ts` denial for status/claim to anon, authenticated, non-owner, and outsider.
-- [ ] 4.2 **GREEN:** Create `supabase/migrations/20260902130000_account_deletion_claim_ledger.sql` with `attempts`, `account_deletion_status`, bounded `claim_account_deletion`, and service_role-only grants.
-- [ ] 4.3 **REFACTOR/evidence:** Update claim/status inventories, grant and forward-revoke checks in `tests/database/reproducibility.test.ts`; regenerate `src/lib/database.types.ts`.
+- [x] 4.1 **RED:** Extend `tests/database/account-deletion-finalization.test.ts` for `pending`/`failed` claims: exactly three executions (initial + two retries), fourth refused, and no finalize surface in this slice; add `tests/isolation/account-deletion-rls.test.ts` denial for status/claim to anon, authenticated, non-owner, and outsider.
+- [x] 4.2 **GREEN:** Create `supabase/migrations/20260902130000_account_deletion_claim_ledger.sql` with `attempts`, `account_deletion_status`, bounded `claim_account_deletion`, and service_role-only grants.
+- [x] 4.3 **REFACTOR/evidence:** Update claim/status inventories, grant and forward-revoke checks in `tests/database/reproducibility.test.ts`; regenerate `src/lib/database.types.ts`.
 
 ## Phase 5: PR3b Finalizer
 
