@@ -413,6 +413,58 @@ export type Database = {
           },
         ]
       }
+      team_ownership_transfers: {
+        Row: {
+          accepted_at: string | null
+          created_at: string
+          expires_at: string
+          from_user_id: string
+          id: string
+          team_id: string
+          to_user_id: string
+        }
+        Insert: {
+          accepted_at?: string | null
+          created_at?: string
+          expires_at?: string
+          from_user_id: string
+          id?: string
+          team_id: string
+          to_user_id: string
+        }
+        Update: {
+          accepted_at?: string | null
+          created_at?: string
+          expires_at?: string
+          from_user_id?: string
+          id?: string
+          team_id?: string
+          to_user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "team_ownership_transfers_from_user_id_fkey"
+            columns: ["from_user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "team_ownership_transfers_team_id_fkey"
+            columns: ["team_id"]
+            isOneToOne: false
+            referencedRelation: "teams"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "team_ownership_transfers_to_user_id_fkey"
+            columns: ["to_user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+        ]
+      }
       teams: {
         Row: {
           created_at: string
@@ -466,6 +518,10 @@ export type Database = {
     }
     Functions: {
       accept_invitation: { Args: { token: string }; Returns: string }
+      accept_team_ownership_transfer: {
+        Args: { p_transfer_id: string }
+        Returns: string
+      }
       apply_checklist_template: {
         Args: { p_launch_id: string; p_template_id: string }
         Returns: string
@@ -483,6 +539,10 @@ export type Database = {
       hash_invitation_token: { Args: { token: string }; Returns: string }
       is_team_member: { Args: { target_team_id: string }; Returns: boolean }
       is_team_owner: { Args: { target_team_id: string }; Returns: boolean }
+      request_team_ownership_transfer: {
+        Args: { p_team_id: string; p_to_user_id: string }
+        Returns: string
+      }
       resolve_team_usernames: {
         Args: { p_team_id: string }
         Returns: {
