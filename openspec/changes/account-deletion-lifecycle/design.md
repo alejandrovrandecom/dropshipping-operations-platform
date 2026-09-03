@@ -2,75 +2,66 @@
 
 ## Technical Approach
 
-Deletion is a database contract, not a service. Probed: `postgres` holds `BYPASSRLS` and `ar*wdDxtm` on `auth.users`, so a definer function deletes the identity in SQL — no Admin API, no `pg_cron`. A live owned team refuses it with `23503`.
+Deletion is a database contract, not a service. `postgres` holds `BYPASSRLS` on `auth.users`, so a definer function deletes the identity in SQL — no Admin API, no `pg_cron`. A live owned team refuses it (`23503`).
 
 ## Architecture Decisions
 
 | Decision | Choice over the alternative | Rationale |
 |---|---|---|
-| Privileged surface | `service_role` execute-only, plus in-SQL `delete from auth.users` | No data privilege; an authenticated reader would be an oracle. |
-| Durable `in_progress` | `claim` commits it, `finalize` works | One RPC cannot expose an intermediate state. |
-| Step isolation | Per-step `begin/exception` blocks | Step `k` fails, steps `1..k-1` stand, state records `failed`. |
-| Attempt bound, **confirmed by the maintainer** | `attempts` on the receipt, incremented by `claim` alone: **3 executions total — 1 initial plus 2 retries** | Resolved, not assumed. One admission point bounds every run; an integer keeps the receipt non-PII. |
-| Exhausted bound | The **fourth** claim is refused, returning the standing `failed` | A distinguishable refusal is an oracle; `finalize` also rejects anything not `in_progress`, so the request awaits operational intervention. |
-| Selected teams | Recorded at request, deleted at finalization | Team precedes identity; selections cascade off `teams`, so retry is a no-op. |
-| Receipt | `account_deletion_requests`, **no** FK | Any referential action destroys what must outlive the account. |
-| Shipped, PR2a/PR2b | Re-offer supersedes, acceptance re-checks membership, a pending offer blocks; `*_require_username` trigger per new table | Expired rows must not block re-offers; a removed member must not inherit; definer RPCs bypass RLS. Inventory 10 → 12. |
-| Typed API | Only `authenticated` RPCs reach `src/` | Wrapping the finalizer pulls `service_role` into `src/`. |
+| Privileged surface | `service_role` execute-only in SQL; only `authenticated` RPCs reach `src/` | An authenticated reader is an oracle. |
+| Claim is the admission point, maintainer-confirmed | It commits `in_progress` and counts 3 executions (1 + 2 retries); the fourth returns `failed` | One RPC cannot expose an intermediate state; one admission point bounds each run. |
+| Step isolation | Per-step `begin/exception`; a failed step stops those after it | Steps `1..k-1` stand; identity takes the address revocation needs. |
+| Selected teams | Recorded at request, deleted at finalization | Selections cascade off `teams`; retry is a no-op. |
+| Receipt | `account_deletion_requests`, no FK | Any referential action destroys what outlives the account. |
+| No scheduler ≠ no purge | `pg_cron`/`pg_net` absence stays with the run; purging is the only MAY | Cleanup may fail without regressing a MUST. |
+| Finalizer delivery, maintainer-selected | `feature-branch-chain` behind a draft tracker, scoped to PR3b | The run's MUSTs are one outcome; tracker children need not be main-safe. |
+| Shipped, PR2a/PR2b | Re-offer supersedes, acceptance re-checks membership, `*_require_username` per table | Expired rows must not block re-offers; inventory 10 → 12. |
 
 ## Data Flow
 
-    request ──→ requests(pending, attempts=0) + selections
-    claim   ──→ in_progress, attempts+1   ── 4th claim refused ──→ frozen failed
-    finalize ─→ teams → invitations → auth.users ──→ done | failed
+    claim   ──→ in_progress, attempts+1  ── 4th refused ──→ frozen failed
+    finalize ─→ teams → invitations → auth.users ──→ done | failed ──→ sweep
 
 ## File Changes
 
-Two new migrations after `…120000_…requests` (`6c7befa`):
-
-- `20260902130000_account_deletion_claim_ledger.sql` — `attempts` column, `account_deletion_status`, bounded `claim_account_deletion`, their `service_role` grants.
-- `20260902140000_account_deletion_finalization.sql` — `finalize_account_deletion` (condemned teams, both revocation scopes, auth identity, lazy purge) and its grant.
-
-Also the isolation file, `tests/database/{account-deletion-finalization,reproducibility}.test.ts`, `src/lib/database.types.ts`; PR4 adds `src/modules/identity/{types,repository,service}.ts` (3-file shape) and `docs/{database/architecture,database/operations,security/database-security}.md`.
+After `…130000_…claim_ledger.sql` ✅: `…140000_…finalization.sql`, `…145000_…invitation_revocation.sql`, `…150000_…receipt_retention.sql`; PR4 alone adds `src/modules/identity/` and docs.
 
 ## Interfaces / Contracts
 
-`claim_account_deletion`, `finalize_account_deletion` and `account_deletion_status` each take `p_user_id uuid`, return `account_deletion_state`, granted to `service_role` alone; the bound lives in `claim`'s body. The three `authenticated` RPCs are unchanged. Revocation: `delete` where `accepted_at is null and (invited_by = target or email = <profile email>)`, before the profile goes.
+`claim_account_deletion`, `finalize_account_deletion` and `account_deletion_status` take `p_user_id uuid`, return `account_deletion_state`, granted to `service_role` alone. Revocation deletes open invitations by `invited_by` or profile email, before the profile goes.
 
 ## Testing Strategy
 
-Serial Vitest, privileged RPCs via `sql()`; gate tests MUST pass `signIn(email, false)`.
-
-- **Integration** — gating, expiry, supersede, membership recheck, attempt bound, retry continuation, idempotency, both revocation scopes, PII removal, username survival, deleted session, re-signup, lazy purge, no scheduler.
-- **Isolation, reproducibility** — unprivileged claim/finalize/status and cross-tenant denial, uniform `42501` by code **and** message; inventories, trigger count, forward-revoke.
+Serial Vitest via `sql()`; gate tests MUST pass `signIn(email, false)`. **Integration** covers the shipped gates plus each child's scenarios. **Isolation/reproducibility**: `42501` denial, inventories, triggers, forward-revoke.
 
 ## Threat Matrix
 
-Git, shell, subprocess, file-classification, PR boundaries: **N/A**.
+Git, shell, subprocess, file-classification: **N/A**.
 
-| Boundary | Applicability | Design response | Planned RED test |
+| Boundary | Applies | Response | RED test |
 |---|---|---|---|
-| Privileged entry point | `service_role` only | Every other role refused identically. | all four caller kinds denied on each slice's entry points |
-| Unbounded privileged retry | `failed` is re-claimable | 3 executions (1 + 2 retries), then frozen. | a `failed` receipt claimed three times, refused the fourth, then unfinalizable |
+| Privileged entry point | `service_role` only | others refused identically | four caller kinds denied |
+| Unbounded retry | `failed` re-claimable | 3 executions, then frozen | claimed thrice, refused, unfinalizable |
+| Cleanup aborting a MUST | 3b-3 trigger | swallowed in its block | injected fault; run `done` |
 
 ## Migration / Rollout
 
-Forward-only, **six** `stacked-to-main` slices, each on the previous one's base and independently green there under focused tests, `pnpm test`, and `pnpm db:smoke --require-runtime`.
+PR1–PR3a shipped `stacked-to-main`; that history stands. **The PR3b sub-chain alone uses `feature-branch-chain`**: a draft/no-merge tracker `pr3b-finalizer` off `9a17fb1` carries this design and the `tasks.md` restructure (73 + 81 = 154); three children land on it, and only the tracker merges to `main`. PR4 follows, entering no child.
 
-| Slice | Deliverable behavior | Authored |
-|---|---|---|
-| PR1 ✅ | FK relaxation, history | 394 |
-| PR2a ✅ | transfers | shipped |
-| PR2b ✅ | requests, gating | `6c7befa` |
-| PR3a | observable state, bounded claim | ~250 |
-| PR3b | the finalizer, lazy purge | ~240 |
-| PR4 | typed API, docs, ledger | ≤400 |
+| Child | Targets | Owns | Lines |
+|---|---|---|---|
+| 3b-1 spine | tracker | `…140000_…finalization.sql` — `22023` guard, idempotent `done`, condemned teams, identity, outcome, grant; isolation file; reproducibility inventory and forward-revoke; types; no-scheduler proof | 69+138+30+24+4+6+126 = **397**, validated |
+| 3b-2 revocation + ordered halt | 3b-1 | `…145000_…invitation_revocation.sql` replaces the finalizer to run both scopes before identity and add the `if not step_failed` guards — the validated early-step continuation fix — plus its injected-fault halt case | ~**239** forecast |
+| 3b-3 lazy retention | 3b-2 | `…150000_…receipt_retention.sql`, the sweep case and helper, trigger and body counts | ~**185** forecast |
 
-**PR3a owns the bound**: column, increment and refusal all sit in `claim`; PR3b writes `done`/`failed` alone. Neither waits on the other: PR3a's bound test seeds `failed` through `sql()`; PR3b proves a genuine partial failure continues on the next claim-then-finalize pair. The uncommitted 399-line PR3 is re-carved: `status` and `claim` move to PR3a and gain the bound, `finalize` moves to PR3b unchanged.
+Each child must be green on its own base under focused vitest, `pnpm test` and `pnpm db:smoke --require-runtime`, with its own TDD, mutation, work-unit, runtime and rollback evidence; none defers. 3b-1 is validated at 397; 3b-2 and 3b-3 are unstarted, so aggregates 397+239+185 = **821** child-chain and 154+821 = **975** combined are forecasts. 3b-1 leaves invitations un-revoked; 3b-2 must close that before the tracker reaches `main`.
 
-Rollback, each removable alone. **PR3a**: drop `…claim_ledger.sql` and the isolation file, revert the additive hunks in both `tests/database/` files. **PR3b**: drop `…finalization.sql` and its hunks in those three files. Both regenerate types and revoke `execute` only: never drop `account_deletion_requests`, never re-tighten a relaxed FK once a row holds a null actor.
+**Retention.** `sweep_expired_deletion_receipts()`: a definer trigger function, `execute` revoked from `public`, `anon`, `authenticated`, `service_role`, fired `after update … when (new.state in ('done','failed'))`. Its delete sits in a `begin/exception when others then null` block, so failed cleanup leaves the receipt and never aborts the finalizer. It fires where the inline sweep did: `claim` writes only `in_progress`, idempotent `done` returns first. No extension.
+
+**Rollback**, forward-only per child. **3b-1**: revoke `execute` on `finalize_account_deletion(uuid)` from `service_role`, then drop it. **3b-2**: `create or replace` restoring 3b-1's body — a forward replace, never a drop. **3b-3**: drop the trigger, then its function. Never drop `account_deletion_requests`, re-tighten a relaxed FK after a null actor, or edit an applied migration.
+
+**sdd-tasks**: Phases 5–8 are 3b-1, 3b-2, 3b-3, PR4; `chain_strategy: feature-branch-chain` scoped to PR3b; the 480-line `size:exception` is dropped, PR3a's 415 stands.
 
 ## Open Questions
 
-- [ ] (non-blocking) Operator reset for a frozen request — the deferred scheduler's concern.
-- [ ] (non-blocking) Receipt expiry constant; the purge is best-effort.
+- None; delivery is settled.
