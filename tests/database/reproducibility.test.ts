@@ -124,6 +124,9 @@ const INVENTORY: Array<[string, string, string[]]> = [
     'resolve_team_usernames: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'restore_launch: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'set_default_checklist_template: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
+    // The retention sweep is reachable only as a trigger: `execute` is revoked from every client
+    // role and from `service_role` too, so `postgres` alone remains and no caller can invoke it.
+    'sweep_expired_deletion_receipts: secdef=true config=search_path="" acl=postgres=X/postgres',
     'transition_launch: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres']],
   // Labels and their order are part of the contract: `transition_launch` compares launch values by
   // name, and the deletion state is the value both the request RPC and the finalizer return.
@@ -246,6 +249,9 @@ const INVENTORY: Array<[string, string, string[]]> = [
     join pg_class c on c.oid = t.tgrelid join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = 'public' and not t.tgisinternal order by c.relname, t.tgname`, [
     "CREATE TRIGGER account_deletion_requests_require_username BEFORE INSERT ON public.account_deletion_requests FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
+    // Retention fires on the one statement that writes a terminal state -- the finalizer's outcome
+    // write. The WHEN clause is the whole reason a claim's `in_progress` never triggers a purge.
+    "CREATE TRIGGER account_deletion_requests_sweep_expired AFTER UPDATE ON public.account_deletion_requests FOR EACH ROW WHEN ((new.state = ANY (ARRAY['done'::account_deletion_state, 'failed'::account_deletion_state]))) EXECUTE FUNCTION sweep_expired_deletion_receipts()",
     "CREATE TRIGGER launch_checklist_items_require_username BEFORE INSERT OR UPDATE ON public.launch_checklist_items FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
     "CREATE TRIGGER launch_checklist_template_items_require_username BEFORE INSERT OR UPDATE ON public.launch_checklist_template_items FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
     "CREATE TRIGGER launch_checklist_templates_require_username BEFORE INSERT OR UPDATE ON public.launch_checklist_templates FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
@@ -277,7 +283,7 @@ it("references every object in a definer body through a schema qualifier", async
   // relation target -- `from`, `join`, `insert into`, `update` -- while skipping `do update set`
   // and plpgsql's `returning ... into <variable>`, neither of which names a relation.
   const bodies = await facts("select prosrc as fact from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'");
-  expect(bodies).toHaveLength(23);
+  expect(bodies).toHaveLength(24);
   for (const body of bodies)
     for (const [, ref] of body.matchAll(/\b(?:from|join|insert\s+into|update)\s+(?!set\b)([a-z_][\w.]*)/gi)) expect(ref).toContain(".");
 });
