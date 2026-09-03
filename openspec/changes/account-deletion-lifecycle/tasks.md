@@ -9,7 +9,7 @@ Chained PRs recommended: Yes
 Chain strategy: feature-branch-chain
 400-line budget risk: High
 
-PR3a 415-line exception stands. Historical: the rejected 575-line candidate and its 480-line exception are source, not evidence. 3b-2 is validated at 253; 3b-3 remains forecast.
+PR3a 415-line exception stands. Historical: the rejected 575-line candidate and its 480-line exception are source, not evidence. 3b-2 is validated at 253 and 3b-3 at 264; Phase 8 remains forecast.
 
 ### Suggested Work Units
 
@@ -17,7 +17,7 @@ PR3a 415-line exception stands. Historical: the rejected 575-line candidate and 
 |---|---|---|---|---|---|
 | 3b-1 spine | `pr3b-finalizer` at `9a17fb1` | `pr3b-1-spine` | `pr3b-finalizer`; 397 validated | `pnpm exec vitest run tests/{database/account-deletion-finalization,isolation/account-deletion-rls,database/reproducibility}.test.ts`; `pnpm test` | Revoke `execute` on and drop `finalize_account_deletion(uuid)`; revert named migration/test/type hunks. |
 | 3b-2 revocation/halt | `pr3b-1-spine` tip | `pr3b-2-revocation-halt` | `pr3b-1-spine`; 253 validated | `pnpm exec vitest run tests/{database/account-deletion-finalization,database/reproducibility}.test.ts`; `pnpm test` | Forward-replace 3b-1 body; revert `20260902145000_account_deletion_invitation_revocation.sql` hunks. |
-| 3b-3 retention | `pr3b-2-revocation-halt` tip | `pr3b-3-retention` | `pr3b-2-revocation-halt`; ~185 | `pnpm exec vitest run tests/{database/account-deletion-finalization,database/reproducibility}.test.ts`; `pnpm test` | Drop retention trigger, then function; revert hunks. |
+| 3b-3 retention | `pr3b-2-revocation-halt` tip | `pr3b-3-retention` | `pr3b-2-revocation-halt`; 264 validated | `pnpm exec vitest run tests/{database/account-deletion-finalization,database/reproducibility}.test.ts`; `pnpm test` | Drop retention trigger, then function; revert hunks. |
 
 ## Phase 1: PR1
 - [x] 1.1 **RED:** `tests/database/{account-deletion-finalization,launch-history}.test.ts`: ownership, null actor/order, outsider denial.
@@ -50,9 +50,9 @@ PR3a 415-line exception stands. Historical: the rejected 575-line candidate and 
 - [x] 6.3 **REFACTOR/evidence:** Finalization/reproducibility hunks, focused/full/runtime results, mutation, forward-replace rollback.
 
 ## Phase 7: PR3b-3 Retention
-- [ ] 7.1 **RED:** In finalization/reproducibility tests, preserve the threat case: “Cleanup aborting a MUST | 3b-3 trigger | swallowed in its block | injected fault; run `done`”; also prove no scheduler.
-- [ ] 7.2 **GREEN:** Create `supabase/migrations/20260902150000_account_deletion_receipt_retention.sql` with `after update` done/failed trigger, revoked execute, swallowed sweep exception.
-- [ ] 7.3 **REFACTOR/evidence:** Trigger/body inventories; cleanup cannot abort finalization; focused/full/runtime results, mutation, rollback.
+- [x] 7.1 **RED:** In finalization/reproducibility tests, preserve the threat case: “Cleanup aborting a MUST | 3b-3 trigger | swallowed in its block | injected fault; run `done`”; also prove no scheduler.
+- [x] 7.2 **GREEN:** Create `supabase/migrations/20260902150000_account_deletion_receipt_retention.sql` with `after update` done/failed trigger, revoked execute, swallowed sweep exception.
+- [x] 7.3 **REFACTOR/evidence:** Trigger/body inventories; cleanup cannot abort finalization; focused/full/runtime results, mutation, rollback.
 
 ## Phase 8: PR4 API/Docs (post-tracker; outside children)
 - [ ] 8.1 **RED:** Extend `tests/database/identity-module.test.ts` and `tests/identity/account-deletion.test.ts` for authenticated wrappers, no `service_role` in `src/`.

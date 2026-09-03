@@ -4,7 +4,7 @@
 `feature-branch-chain`** behind draft tracker `pr3b-finalizer` at `9a17fb1`, with children 3b-1 →
 3b-2 → 3b-3 targeting each other and only the tracker reaching `main`. PR4 follows the tracker.
 One `size:exception` stands, scoped to **PR3a alone** at 415 native lines; the rejected 480-line
-PR3b exception is withdrawn. 3b-1 is measured at 397 and 3b-2 at 253; only 3b-3 remains a forecast.
+PR3b exception is withdrawn. 3b-1 is measured at 397, 3b-2 at 253, 3b-3 at 264; Phase 8 is pending.
 
 ## Completed Tasks
 
@@ -26,8 +26,11 @@ PR3b exception is withdrawn. 3b-1 is measured at 397 and 3b-2 at 253; only 3b-3 
 - [x] 6.1 RED — injected revocation fault: teams stand, identity halts, retry completes both scopes
 - [x] 6.2 GREEN — `20260902145000_account_deletion_invitation_revocation.sql` (forward replace)
 - [x] 6.3 REFACTOR/evidence — mutation, focused/full/runtime, forward-replace rollback
+- [x] 7.1 RED — terminal-only, age-bounded, capped purge; injected cleanup fault cannot abort a run
+- [x] 7.2 GREEN — `20260902150000_account_deletion_receipt_retention.sql` (trigger, not a sweep)
+- [x] 7.3 REFACTOR/evidence — trigger/function inventories, definer bodies 23→24, mutation, rollback
 
-Phases 7 (3b-3 retention) and 8 (PR4) remain unstarted.
+Phase 8 (PR4) remains unstarted.
 
 > Two attempts in this file are **historical**, and neither contributes a completed task above.
 > The combined Unit 2 was carved into PR2a and PR2b, both green. The combined **PR3** was
@@ -964,7 +967,103 @@ the profile goes — and its step-isolation row are implemented exactly, and bot
   the restrictive owner key refused the identity anyway. Inserting revocation between them is what
   makes the guard load-bearing, which is why it ships in this child and not the last.
 
+---
+
+# PR3b-3 — `pr3b-3-retention` (child of `pr3b-2-revocation-halt`, PR target `pr3b-2-revocation-halt`)
+
+Attempt token `sha256:69049108…130116`, request `pr3b-3-retention-apply-20260902`. Third and last
+child of the PR3b chain. Measured against pre-Phase-7 tree `545e621148f64952b956c1396c78ff01a7826cb5`.
+
+## Scope
+
+Ships `sweep_expired_deletion_receipts()` and the `after update … when (new.state in ('done','failed'))`
+trigger on the receipt, `execute` revoked from every client role and from `service_role`. Terminal
+receipts past a 30-day retention are deleted, at most 100 per firing, inside a block whose handler
+discards everything. **A trigger, not an inline finalizer sweep and not a scheduler** — the recovery
+bundle's inline `3b3-lazy-sweep.sql` fragment was rejected for exactly that reason. No extension is
+installed. Every PR3a/3b-1/3b-2 behaviour is untouched: their functional bytes are byte-identical.
+
+## TDD Cycle Evidence
+
+| Task | Test | Layer | Safety Net | RED (executed) | GREEN | TRIANGULATE | REFACTOR |
+|---|---|---|---|---|---|---|---|
+| 7.1 | `tests/database/account-deletion-finalization.test.ts` | Integration | 12/12 on the 3b-2 tip | `expected 120 to be 20` — no sweep exists | 14/14 | eligible / fresh / non-terminal / capped / claim-does-not-fire | `seedReceipts`/`eligible`/`receiptOf` helpers |
+| 7.1 | threat case, same file | Integration | — | `expected 1 to be +0` — the mechanism was absent, so the case could not be trivially green | 14/14 | fault present, then removed | fault scoped by `when (old.user_id = …)`, dropped in `finally` |
+| 7.2 | (driven by 7.1) | Integration | — | — | 14/14 | 2 bounds, 1 cap, 1 swallow | — |
+| 7.3 | `tests/database/reproducibility.test.ts` | Reproducibility | 28/28 | 3 failed: function inventory 23→24, trigger inventory 13→14, definer bodies | 28/28 | inventories + ACL | — |
+
+The receipt carries no foreign key, so 120 synthetic receipts cost one statement and no auth rows —
+which is what makes the cap testable at its real value instead of a token one.
+
+### Mutation proof
+
+| Mutation | Observed | Restored |
+|---|---|---|
+| age predicate dropped | **5 failed**, and the harm is the first: the run sweeps its own just-written receipt, so `status`/`claim` answer `null` | Yes |
+| retention constant `interval '30 days'` → `interval '31 days'` | Exactly 1: `expected 120 to be 20` — eligible receipts were not swept | Yes |
+| retention constant `interval '30 days'` → `interval '29 days'` | Exactly 1: `expected +0 to be 1` — the just-within receipt was swept | Yes |
+| terminal filter widened to `where true` | Exactly 1: `expected +0 to be 1` — the live `pending` receipt was purged | Yes |
+| `limit cap` removed | Exactly 1: `expected +0 to be 20` — all 120 went in one firing | Yes |
+| swallowing block removed | Exactly 1: `expected { code: 'P0001' } to be 'done'` — **the MAY aborted the MUST**, the exact threat-matrix row | Yes |
+| trigger `WHEN` clause removed | Exactly 1: `expected 20 to be 120` — a claim's `in_progress` fired a purge | Yes |
+| `service_role` dropped from the revoke | **28/28 still passed** — see below | Yes |
+
+Seven failing mutations, each at its own assertion, so no bound carries another's proof; the two
+constant ones fail on opposite assertions, pinning 30 days from both sides. Each restored **byte-identically** before GREEN: `52b3dce4b6aaa5994c8fdf276bb685b748f054e42bde384db6d6da04bd015a2f`.
+
+**One clause is not independently provable, and is reported rather than hidden.** Revoking `execute`
+from `service_role` is currently redundant — it holds no explicit grant and inherits PUBLIC, so that
+revoke alone denies it; probed, `has_function_privilege` is `false` for all three roles and `proacl`
+is `postgres=X/postgres` either way. It is **not** a guard against a future grant: REVOKE removes a
+privilege, it does not persist a deny. Only the ACL inventory catches that. Kept: design names it.
+
+## Work Unit Evidence
+
+| Evidence | Value |
+|---|---|
+| Focused, exact `tasks.md` 3b-3 command | **42 passed (2 files)** |
+| Dirty-db rerun, no reset | **42 passed (2 files)** |
+| Full suite | `pnpm test` → **169 passed, 15 files** (167 at 3b-2) |
+| Runtime harness | `pnpm db:smoke --require-runtime` → **SMOKE OK (static + rebuild)**, 13 migrations in order |
+| Generated types | byte-identical — a trigger function adds no generated surface |
+| Rollback | Forward-only, per design: drop `account_deletion_requests_sweep_expired`, then
+`sweep_expired_deletion_receipts()`; revert the named test/reproducibility hunks. Never drop `account_deletion_requests`; no applied migration is edited. |
+| Cleanup | Injected fault trigger/function dropped in a `finally`; mutation copy and helper script removed; parent functional bytes byte-identical. |
+
+## Review Budget — child diff against the pre-Phase-7 tree
+
+Baseline `545e621148f64952b956c1396c78ff01a7826cb5` equals the tracked worktree at the 3b-2 tip and,
+being a tree, holds no untracked migration. **Method:** tracked paths by `git diff --numstat <tree>`;
+untracked migrations counted by line and attributed by owner — 140000 (69) and 145000 (76) are
+parent-owned and excluded, 150000 is this child's.
+
+| Path | Native (`+`/`-`) |
+|---|---|
+| `…/20260902150000_account_deletion_receipt_retention.sql` (untracked, this child) | 51 |
+| `tests/database/account-deletion-finalization.test.ts` | 84 + 0 = 84 |
+| `tests/database/reproducibility.test.ts` | 7 + 1 = 8 |
+| `apply-progress.md` (this evidence) | 102 + 3 = 105 |
+| `tasks.md` 7.1–7.3 flips and status | 5 + 5 = 10 |
+| `design.md` retention bounds and status | 3 + 3 = 6 |
+| **Total** | 51 + 84 + 8 + 105 + 10 + 6 = **264 / 400**, no exception |
+
+## Deviations from Design
+
+**One, additive and reported.** Design fixed the mechanism, the firing condition, the revokes and
+the swallowing block, but named no retention window and no batch size. This ships 30 days and 100
+rows per firing, and design now records both. The window matches the value the rejected monolith
+used; the cap is new, and exists so a long-neglected table cannot turn an unbounded delete loose
+inside a finalizing transaction. The spec permits both: purging is a MAY with no fixed retention or
+purge-time guarantee, so a gradual drain is conforming.
+
+## Issues Found
+
+- The age predicate is doing more than expiry: without it the sweep deletes the receipt the current
+  run has just written, and `status` then answers `null` for a completed deletion. That is why its
+  mutation breaks five tests rather than one, and it is the same trap the rejected monolith hit.
+- Purging is bounded but not scheduled, so a table nobody finalizes against is never swept. That is
+  the spec's position, not an oversight: no timing guarantee is offered and none is implied.
+
 ## Remaining Tasks
 
-- [ ] 7.1–7.3 3b-3 receipt retention
 - [ ] 8.1–8.3 PR4 typed API and docs
