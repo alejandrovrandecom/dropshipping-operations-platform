@@ -600,6 +600,10 @@ export type Database = {
         Args: { p_launch_id: string; p_name: string; p_team_id: string }
         Returns: string
       }
+      finalize_account_deletion: {
+        Args: { p_user_id: string }
+        Returns: Database["public"]["Enums"]["account_deletion_state"]
+      }
       has_username: { Args: never; Returns: boolean }
       hash_invitation_token: { Args: { token: string }; Returns: string }
       is_team_member: { Args: { target_team_id: string }; Returns: boolean }
