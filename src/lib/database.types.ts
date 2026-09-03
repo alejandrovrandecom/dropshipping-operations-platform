@@ -9,6 +9,60 @@ export type Json =
 export type Database = {
   public: {
     Tables: {
+      account_deletion_requests: {
+        Row: {
+          id: string
+          requested_at: string
+          state: Database["public"]["Enums"]["account_deletion_state"]
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          id?: string
+          requested_at?: string
+          state?: Database["public"]["Enums"]["account_deletion_state"]
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          id?: string
+          requested_at?: string
+          state?: Database["public"]["Enums"]["account_deletion_state"]
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      account_deletion_team_selections: {
+        Row: {
+          request_id: string
+          team_id: string
+        }
+        Insert: {
+          request_id: string
+          team_id: string
+        }
+        Update: {
+          request_id?: string
+          team_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "account_deletion_team_selections_request_id_fkey"
+            columns: ["request_id"]
+            isOneToOne: false
+            referencedRelation: "account_deletion_requests"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "account_deletion_team_selections_team_id_fkey"
+            columns: ["team_id"]
+            isOneToOne: false
+            referencedRelation: "teams"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       launch_checklist_items: {
         Row: {
           checklist_id: string
@@ -539,6 +593,10 @@ export type Database = {
       hash_invitation_token: { Args: { token: string }; Returns: string }
       is_team_member: { Args: { target_team_id: string }; Returns: boolean }
       is_team_owner: { Args: { target_team_id: string }; Returns: boolean }
+      request_account_deletion: {
+        Args: { p_delete_team_ids: string[] }
+        Returns: Database["public"]["Enums"]["account_deletion_state"]
+      }
       request_team_ownership_transfer: {
         Args: { p_team_id: string; p_to_user_id: string }
         Returns: string
@@ -567,6 +625,7 @@ export type Database = {
       }
     }
     Enums: {
+      account_deletion_state: "pending" | "in_progress" | "done" | "failed"
       launch_event_kind: "created" | "transitioned" | "checklist_applied"
       launch_status: "preparing" | "active" | "archived" | "discarded" | "trash"
     }
@@ -696,6 +755,7 @@ export type CompositeTypes<
 export const Constants = {
   public: {
     Enums: {
+      account_deletion_state: ["pending", "in_progress", "done", "failed"],
       launch_event_kind: ["created", "transitioned", "checklist_applied"],
       launch_status: ["preparing", "active", "archived", "discarded", "trash"],
     },

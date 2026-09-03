@@ -24,6 +24,8 @@ const INVENTORY: Array<[string, string, string[]]> = [
     a.atttypmod), ', ' order by a.attname) as fact from pg_class c join pg_namespace n on n.oid = c.relnamespace
     join pg_attribute a on a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped
     where n.nspname = 'public' and c.relkind = 'r' group by c.relname order by 1`, [
+    "account_deletion_requests: id uuid, requested_at timestamp with time zone, state account_deletion_state, updated_at timestamp with time zone, user_id uuid",
+    "account_deletion_team_selections: request_id uuid, team_id uuid",
     "launch_checklist_items: checklist_id uuid, created_at timestamp with time zone, created_by uuid, id uuid, is_complete boolean, is_required boolean, label text, position integer, team_id uuid",
     "launch_checklist_template_items: created_at timestamp with time zone, created_by uuid, id uuid, is_required boolean, label text, position integer, team_id uuid, template_id uuid",
     "launch_checklist_templates: created_at timestamp with time zone, created_by uuid, id uuid, is_default boolean, name text, team_id uuid",
@@ -38,14 +40,15 @@ const INVENTORY: Array<[string, string, string[]]> = [
     "username_reservations: claimed_at timestamp with time zone, user_id uuid, username text"]],
   ["row level security, enabled and forced", `select relname || ': rls=' || relrowsecurity || ' forced='
     || relforcerowsecurity as fact ${PUBLIC_TABLES} order by 1`, [
+    "account_deletion_requests: rls=true forced=true", "account_deletion_team_selections: rls=true forced=true",
     "launch_checklist_items: rls=true forced=true", "launch_checklist_template_items: rls=true forced=true",
     "launch_checklist_templates: rls=true forced=true", "launch_checklists: rls=true forced=true",
     "launch_events: rls=true forced=true", "launches: rls=true forced=true", "memberships: rls=true forced=true",
     "profiles: rls=true forced=true", "team_invitations: rls=true forced=true",
     "team_ownership_transfers: rls=true forced=true", "teams: rls=true forced=true",
     "username_reservations: rls=true forced=true"]],
-  // `team_ownership_transfers` is absent on purpose, and its absence is the assertion: with security
-  // forced and no permissive policy, adding one would appear here and fail this list.
+  // The three deletion tables are absent on purpose, and their absence is the assertion: with
+  // security forced and no permissive policy, adding one would appear here and fail this list.
   ["policy inventory", `select tablename || ': ' || string_agg(policyname || '/' || cmd || '/' ||
     array_to_string(roles, '+'), ', ' order by policyname) as fact from pg_policies
     where schemaname = 'public' group by tablename order by 1`, [
@@ -61,6 +64,10 @@ const INVENTORY: Array<[string, string, string[]]> = [
     "teams: teams_delete_owner/DELETE/authenticated, teams_insert_self_owned/INSERT/authenticated, teams_select_member/SELECT/authenticated, teams_update_owner/UPDATE/authenticated"]],
   ["table grants", `select relname || ': ' || coalesce(array_to_string(relacl, ', '), 'DEFAULT') as fact
     ${PUBLIC_TABLES} order by 1`, [
+    // The receipt and its selections join the registry and the transfer table in holding no client
+    // privilege at all: the request RPC is the only door, and the finalizer's will be `service_role`.
+    "account_deletion_requests: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres",
+    "account_deletion_team_selections: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres",
     "launch_checklist_items: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres, authenticated=r/postgres",
     "launch_checklist_template_items: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres, authenticated=r/postgres",
     "launch_checklist_templates: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres, authenticated=r/postgres",
@@ -106,16 +113,18 @@ const INVENTORY: Array<[string, string, string[]]> = [
     'hash_invitation_token: secdef=false config=search_path="" acl=postgres=X/postgres',
     'is_team_member: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'is_team_owner: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
+    'request_account_deletion: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'request_team_ownership_transfer: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'resolve_team_usernames: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'restore_launch: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'set_default_checklist_template: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'transition_launch: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres']],
-  // The launch slice is the first to add enumerated domains, so its labels and their order are
-  // part of the contract: `transition_launch` compares against these values by name.
+  // Labels and their order are part of the contract: `transition_launch` compares launch values by
+  // name, and the deletion state is the value both the request RPC and the finalizer return.
   ["enum inventory", `select t.typname || ': ' || string_agg(e.enumlabel, ', ' order by e.enumsortorder) as fact
     from pg_type t join pg_enum e on e.enumtypid = t.oid join pg_namespace n on n.oid = t.typnamespace
     where n.nspname = 'public' group by t.typname order by 1`, [
+    "account_deletion_state: pending, in_progress, done, failed",
     "launch_event_kind: created, transitioned, checklist_applied",
     "launch_status: preparing, active, archived, discarded, trash"]],
   // Tenant safety here is structural, not procedural: every descendant reaches its team through a
@@ -161,16 +170,29 @@ const INVENTORY: Array<[string, string, string[]]> = [
     where x.indrelid = 'public.team_ownership_transfers'::regclass`, [
     "constraints: team_ownership_transfers_from_user_id_fkey/f/c, team_ownership_transfers_pkey/p, team_ownership_transfers_recipient_check/c, team_ownership_transfers_team_id_fkey/f/c, team_ownership_transfers_to_user_id_fkey/f/c",
     "indexes: team_ownership_transfers_pending_idx/unique/partial, team_ownership_transfers_pkey/unique"]],
+  // The receipt's absent foreign key is the decision here, exactly as it is for the registry: it has
+  // to outlive the account it names, and every referential action destroys or blanks that record.
+  // Inventorying it is what stops a later "fix" adding one. `user_id` is unique, so an account holds
+  // at most one receipt. The selections are the opposite kind of row -- live intent, `f/c` twice, so
+  // a finalized team takes its own selection with it and a retry finds nothing left to do.
+  ["deletion request constraint inventory", `select 'constraints: ' || string_agg(con.conname || '/' ||
+    con.contype::text || case when con.contype = 'f' then '/' || con.confdeltype::text else '' end, ', '
+    order by con.conname) as fact from pg_constraint con
+    where con.conrelid in ('public.account_deletion_requests'::regclass,
+      'public.account_deletion_team_selections'::regclass)`, [
+    "constraints: account_deletion_requests_pkey/p, account_deletion_requests_user_id_key/u, account_deletion_team_selections_pkey/p, account_deletion_team_selections_request_id_fkey/f/c, account_deletion_team_selections_team_id_fkey/f/c"]],
   // `set null` is only half a relaxed reference: on a required column the referential action would
   // raise a fresh violation and refuse the deletion again, so nullability is inventoried beside the
-  // actions. The four columns that stay `required` are as much of the contract as the eight that do
-  // not -- a team keeps its owner, a membership keeps its member.
+  // actions. The five columns that stay `required` are as much of the contract as the eight that do
+  // not -- a team keeps its owner, a membership keeps its member, and a receipt keeps its subject:
+  // that last one is `required` and unreferenced at once, which is what lets it outlive the account.
   ["deletion reference nullability", `select c.relname || '.' || a.attname || ': ' ||
     case when a.attnotnull then 'required' else 'nullable' end as fact from pg_attribute a
     join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = 'public' and c.relkind = 'r' and a.attnum > 0 and not a.attisdropped
     and a.attname in ('created_by', 'actor_user_id', 'invited_by', 'accepted_by', 'owner_user_id', 'user_id')
     order by 1`, [
+    "account_deletion_requests.user_id: required",
     "launch_checklist_items.created_by: nullable", "launch_checklist_template_items.created_by: nullable",
     "launch_checklist_templates.created_by: nullable", "launch_checklists.created_by: nullable",
     "launch_events.actor_user_id: nullable", "launches.created_by: nullable",
@@ -204,7 +226,7 @@ const INVENTORY: Array<[string, string, string[]]> = [
     join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = 'public' and c.relname = 'username_reservations' order by 1`, [
     "username_reservations_pkey/unique", "username_reservations_user_id_key/unique"]],
-  // The gate is eleven statement-level triggers and nothing else, so this is the whole of it. The
+  // The gate is twelve statement-level triggers and nothing else, so this is the whole of it. The
   // definitions are compared verbatim: a trigger dropped, narrowed to a row, moved to `after`,
   // pointed at another function, or widened past `display_name` on `profiles` fails right here.
   // `teams` insert and delete are gated twice over -- once directly, and once through the
@@ -213,6 +235,7 @@ const INVENTORY: Array<[string, string, string[]]> = [
   ["trigger inventory", `select pg_catalog.pg_get_triggerdef(t.oid) as fact from pg_trigger t
     join pg_class c on c.oid = t.tgrelid join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = 'public' and not t.tgisinternal order by c.relname, t.tgname`, [
+    "CREATE TRIGGER account_deletion_requests_require_username BEFORE INSERT ON public.account_deletion_requests FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
     "CREATE TRIGGER launch_checklist_items_require_username BEFORE INSERT OR UPDATE ON public.launch_checklist_items FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
     "CREATE TRIGGER launch_checklist_template_items_require_username BEFORE INSERT OR UPDATE ON public.launch_checklist_template_items FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
     "CREATE TRIGGER launch_checklist_templates_require_username BEFORE INSERT OR UPDATE ON public.launch_checklist_templates FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
@@ -244,7 +267,7 @@ it("references every object in a definer body through a schema qualifier", async
   // relation target -- `from`, `join`, `insert into`, `update` -- while skipping `do update set`
   // and plpgsql's `returning ... into <variable>`, neither of which names a relation.
   const bodies = await facts("select prosrc as fact from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'");
-  expect(bodies).toHaveLength(19);
+  expect(bodies).toHaveLength(20);
   for (const body of bodies)
     for (const [, ref] of body.matchAll(/\b(?:from|join|insert\s+into|update)\s+(?!set\b)([a-z_][\w.]*)/gi)) expect(ref).toContain(".");
 });
@@ -268,8 +291,11 @@ it("adds exactly six launch tables and two launch enums", async () => {
   expect(await facts(`select c.relname::text as fact ${PUBLIC_TABLES} and c.relname like 'launch%' order by 1`)).toEqual([
     "launch_checklist_items", "launch_checklist_template_items", "launch_checklist_templates",
     "launch_checklists", "launch_events", "launches"]);
+  // Scoped to `launch%` because a later slice legitimately owns an enum of its own; the unscoped
+  // enum inventory above stays the general guard against a stray type appearing anywhere.
   expect(await facts(`select t.typname::text as fact from pg_type t join pg_namespace n on n.oid = t.typnamespace
-    where n.nspname = 'public' and t.typtype = 'e' order by 1`)).toEqual(["launch_event_kind", "launch_status"]);
+    where n.nspname = 'public' and t.typtype = 'e' and t.typname like 'launch%' order by 1`))
+    .toEqual(["launch_event_kind", "launch_status"]);
 });
 it("closes the claim through a forward revoke that never drops the registry", async () => {
   // Rollback for this slice is asymmetric on purpose. Revoking `execute` closes new claims, but
@@ -295,7 +321,7 @@ it("closes the claim through a forward revoke that never drops the registry", as
 });
 it("reopens the gate through a symmetric rollback that leaves the registry standing", async () => {
   // The claim's rollback is asymmetric because a reservation is permanent; the gate's is not.
-  // Dropping the ten triggers and revoking the resolver restores the exact pre-gate schema, so a
+  // Dropping the twelve triggers and revoking the resolver restores the exact pre-gate schema, so a
   // future migration can undo this slice completely. As above, the block proves the path, then aborts.
   await expect(sql(`do $$
     declare gate record;
@@ -313,8 +339,8 @@ it("reopens the gate through a symmetric rollback that leaves the registry stand
       raise exception 'symmetric rollback verified';
     end $$;`)).rejects.toThrow("symmetric rollback verified");
 
-  // The aborted block put all ten triggers back, and the resolver grant with them.
-  expect(await facts("select count(*)::text as fact from pg_trigger where tgname like '%require_username'")).toEqual(["11"]);
+  // The aborted block put all twelve triggers back, and the resolver grant with them.
+  expect(await facts("select count(*)::text as fact from pg_trigger where tgname like '%require_username'")).toEqual(["12"]);
   expect(await facts(`select pg_catalog.has_function_privilege('authenticated',
     'public.resolve_team_usernames(uuid)', 'execute')::text as fact`)).toEqual(["true"]);
 });
