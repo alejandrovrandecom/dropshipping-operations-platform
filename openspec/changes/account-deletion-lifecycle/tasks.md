@@ -47,9 +47,9 @@ Each unit independently passes focused tests, `pnpm test`, and `pnpm db:smoke --
 
 ## Phase 3: PR2b Requests
 
-- [ ] 3.1 **RED:** In `tests/identity/account-deletion.test.ts`, add `signIn(email, false)` cases for complete resolution, pending transfer, selected team, hidden self-only request, and usernameless denial.
-- [ ] 3.2 **GREEN:** Create `supabase/migrations/20260902120000_account_deletion_requests.sql` with enum, forced-RLS requests/selections, request RPC, and `account_deletion_requests_require_username`.
-- [ ] 3.3 **REFACTOR/evidence:** Update request inventory/trigger count (11→12) in `tests/database/reproducibility.test.ts`; regenerate `src/lib/database.types.ts`.
+- [x] 3.1 **RED:** In `tests/identity/account-deletion.test.ts`, add `signIn(email, false)` cases for complete resolution, pending transfer, selected team, hidden self-only request, and usernameless denial.
+- [x] 3.2 **GREEN:** Create `supabase/migrations/20260902120000_account_deletion_requests.sql` with enum, forced-RLS requests/selections, request RPC, and `account_deletion_requests_require_username`.
+- [x] 3.3 **REFACTOR/evidence:** Update request inventory/trigger count (11→12) in `tests/database/reproducibility.test.ts`; regenerate `src/lib/database.types.ts`.
 
 ## Phase 4: PR3 Finalization
 
