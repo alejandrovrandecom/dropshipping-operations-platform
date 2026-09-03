@@ -10,8 +10,11 @@
 - [x] 2.1 RED — `tests/identity/account-deletion.test.ts`, transfer boundary and username gate
 - [x] 2.2 GREEN — `20260902110000_account_deletion_transfers.sql`
 - [x] 2.3 REFACTOR/evidence — transfer inventories (triggers 10→11), regenerated types
+- [x] 3.1 RED — request resolution, self-only receipt and request gate cases
+- [x] 3.2 GREEN — `20260902120000_account_deletion_requests.sql`
+- [x] 3.3 REFACTOR/evidence — request inventories (triggers 11→12), regenerated types
 
-PR2b and Phases 4–5 remain unstarted.
+Phases 4–5 remain unstarted.
 
 > The combined Unit 2 attempt is **historical**: it was carved into PR2a and PR2b. PR2a is below
 > and independently green; nothing in this file is currently blocked.
@@ -359,8 +362,114 @@ the owned set after proving it equals the named set; a live pending transfer ref
 even when the team is also named; `account_deletion_requests_require_username` taking triggers to 12;
 `pg_catalog.unnest` and comment hygiene for the definer-body audit.
 
+---
+
+# PR2b — `pr2b-account-deletion-request-state` (base `b1d5bbf`)
+
+Attempt ordinal 6, generation 5, work unit `pr2b-account-deletion-request-state`,
+revision `sha256:913623002ee879caa02621f2bf911b6e7147ddcba08c55f696520932dd4e088b`.
+Reconstructed from the combined attempt and the PR2a notes above; nothing was rediscovered.
+
+## Scope
+
+Ships the enum `account_deletion_state`, the foreign-key-free receipt `account_deletion_requests`,
+`account_deletion_team_selections`, `request_account_deletion` including its pending-transfer check,
+forced RLS with no policy and no grant on both tables, and
+`account_deletion_requests_require_username` (trigger count 11 → 12). The privileged claim, the
+finalization, the status read and every `service_role` grant are deliberately absent: PR3 owns them.
+A request records intent only — this slice deletes nothing.
+
+## TDD Cycle Evidence
+
+| Task | Test | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|---|---|---|---|---|---|---|---|
+| 3.1 | `tests/identity/account-deletion.test.ts` | Integration | 32/32 passed | 5 failed: 4 on `PGRST202`, 1 on a null receipt | 11/11 passed | 5 cases, each carrying its own second call | helpers `requestDeletion`/`requestFact`/`selectedTeams` extracted |
+| 3.2 | (driven by 3.1) | Integration | — | — | 11/11 passed | 1 enum, 2 tables, 1 RPC, 1 trigger | linter-driven return cast |
+| 3.3 | `tests/database/reproducibility.test.ts` | Reproducibility | 26/26 passed | 12 failed | 27/27 passed | 1 new inventory + 8 extended | launch enum guard narrowed |
+
+RED was executed, not assumed. Before the migration all five new tests failed, four with `PGRST202`
+naming an RPC that did not exist and the fifth with a null receipt where `pending` was expected.
+
+Triangulation is real in every case rather than a second happy path: each refusal is followed by the
+**identical call** succeeding once one fact changes — the live team is handed over, the offer is
+expired, the username is claimed. So each refusal proves its own guard and not some other denial.
+
+The 3.3 RED found one thing the slice did not plan for, exactly as the combined attempt predicted:
+`adds exactly six launch tables and two launch enums` read every enum in `public`, so
+`account_deletion_state` failed it. Narrowed to `typname like 'launch%'`; the unscoped enum
+inventory above it remains the general guard.
+
+### Mutation proof
+
+| Mutation | Expected | Observed | Restored |
+|---|---|---|---|
+| live-offer clause removed from the resolution check | only the pending-transfer test breaks | Exactly 1 failed: `refuses while an owned team carries a live offer…`; 10 passed | Yes, `db reset` |
+| `account_deletion_requests_require_username` dropped | only the usernameless test breaks | Exactly 1 failed: `denies the request RPC to an account holding no username…`; 10 passed | Yes, `db reset` |
+| named-team ownership check removed | only the existence-oracle test breaks | Exactly 1 failed: `refuses an unowned team and an absent one identically`; 10 passed | Yes, `db reset` |
+
+Three disjoint failures, so no guard is carrying another's proof. The migration was restored
+byte-identically after each round (`diff -q` against a pre-mutation copy).
+
+## Work Unit Evidence
+
+| Evidence | Value |
+|---|---|
+| Focused | `pnpm exec vitest run tests/identity/account-deletion.test.ts tests/database/reproducibility.test.ts` → **38 passed (2 files)** |
+| Focused rerun, no reset | `tests/identity/account-deletion.test.ts` alone against the database the full suite left dirty → **11 passed** |
+| Full suite | `pnpm test` → **155 passed, 14 files** (was 149/14) |
+| Runtime harness | `pnpm db:smoke --require-runtime` → **SMOKE OK (static + rebuild)**, 9 migrations applied in order |
+| Rollback boundary | Delete `supabase/migrations/20260902120000_account_deletion_requests.sql`; revert the additive hunks in `tests/identity/account-deletion.test.ts` and `tests/database/reproducibility.test.ts`; regenerate `src/lib/database.types.ts`. PR1 and PR2a are untouched, and no earlier migration is edited. |
+
+Full-suite count moves 149 → 155: five new request tests and one new reproducibility inventory.
+
+## Review Budget
+
+| Bucket | Lines |
+|---|---|
+| `20260902120000_account_deletion_requests.sql` | 102 |
+| `tests/identity/account-deletion.test.ts` | 112 + 8 = 120 |
+| `tests/database/reproducibility.test.ts` | 38 + 12 = 50 |
+| **Authored total** | **272** (budget 400; forecast 190–270) |
+| Generated types (excluded) | 60 |
+| SDD artifacts (`tasks.md`, this file) | tracked separately |
+
+Two lines above the 270 forecast, and 128 inside the budget. No compression was needed, so every
+argument in the migration and the tests is intact.
+
+## Deviations from Design
+
+**One, additive and reported.** Design named the tables and the RPC but did not say what a *second*
+request does. `request_account_deletion` returns the standing receipt's state unchanged instead of
+inserting or replacing. The alternative — refusing outright — was rejected because the caller then
+cannot read its own state at all until PR3 lands `account_deletion_status`, and replacing was
+rejected because deletion is definitive: a second call must never reopen a claimed request or
+quietly condemn a different set of teams. `user_id` is unique, so the invariant is in the schema and
+not only in the body.
+
+Two design-silent decisions worth review: the receipt carries `requested_at` and `updated_at` so
+PR3's state transitions and best-effort purge need no `alter table` on a table this slice owns; and
+selections are deliberately ungated by a trigger of their own, since their only write shares a
+transaction with the gated receipt insert and no grant reaches them by any other route.
+
+## Issues Found
+
+- **The schema linter caught a real defect the tests could not.** `return 'pending';` passed all
+  eleven behavioral tests, because plpgsql casts the text literal on the way out — but
+  `supabase db lint` reported `42804`, "the input expression type does not have an assignment cast
+  to the target type". Fixed to `return 'pending'::public.account_deletion_state`. The behavior was
+  identical either way; the contract was not, and `passes the schema linter` is the assertion that
+  found it. This is the argument for keeping the linter inside the reproducibility suite.
+- The pending-transfer refusal and the unowned-team refusal carry **different** messages on purpose.
+  The security-relevant equality is unowned vs absent, and that pair is asserted equal by message,
+  not merely both failed. A caller learning that its *own* teams are unresolved learns nothing about
+  another tenant.
+- Selections are written out of the owned set after the two checks prove it equal to the named set.
+  Writing the caller's array directly would reintroduce the unowned refusal as a constraint
+  violation — the distinguishable error the first check exists to prevent.
+- `pg_catalog.unnest` is spelled qualified, and the in-body comments avoid `from`, `join`, `update`
+  and `insert into` entirely, because the definer-body audit reads `prosrc` including its comments.
+
 ## Remaining Tasks
 
-- [ ] 3.1–3.3 PR2b requests (reconstruct from the notes above)
 - [ ] 4.1–4.4 PR3 finalization
 - [ ] 5.1–5.3 PR4 typed API and ledger
