@@ -4,7 +4,7 @@
 `feature-branch-chain`** behind draft tracker `pr3b-finalizer` at `9a17fb1`, with children 3b-1 →
 3b-2 → 3b-3 targeting each other and only the tracker reaching `main`. PR4 follows the tracker.
 One `size:exception` stands, scoped to **PR3a alone** at 415 native lines; the rejected 480-line
-PR3b exception is withdrawn. 3b-1 is measured at 397; 3b-2 and 3b-3 are forecasts, not yet proven.
+PR3b exception is withdrawn. 3b-1 is measured at 397 and 3b-2 at 253; only 3b-3 remains a forecast.
 
 ## Completed Tasks
 
@@ -23,8 +23,11 @@ PR3b exception is withdrawn. 3b-1 is measured at 397; 3b-2 and 3b-3 are forecast
 - [x] 5.1 RED — spine: service-role denial, `22023` guard, teams→identity, retry, session/re-signup, no scheduler
 - [x] 5.2 GREEN — `20260902140000_account_deletion_finalization.sql` (spine only)
 - [x] 5.3 REFACTOR/evidence — function inventory, definer bodies 22→23, forward revoke, types
+- [x] 6.1 RED — injected revocation fault: teams stand, identity halts, retry completes both scopes
+- [x] 6.2 GREEN — `20260902145000_account_deletion_invitation_revocation.sql` (forward replace)
+- [x] 6.3 REFACTOR/evidence — mutation, focused/full/runtime, forward-replace rollback
 
-Phases 6 (3b-2 revocation/halt), 7 (3b-3 retention) and 8 (PR4) remain unstarted.
+Phases 7 (3b-3 retention) and 8 (PR4) remain unstarted.
 
 > Two attempts in this file are **historical**, and neither contributes a completed task above.
 > The combined Unit 2 was carved into PR2a and PR2b, both green. The combined **PR3** was
@@ -870,8 +873,98 @@ spec's *Done request is retried* scenario demands the same. `pending` is refused
 - The definer-body audit was run against the spine body before its first execution, because `prosrc`
   includes comments; it passed first time and the count moves 22 → 23.
 
+---
+
+# PR3b-2 — `pr3b-2-revocation-halt` (child of `pr3b-1-spine`, PR target `pr3b-1-spine`)
+
+Attempt token `sha256:cdf92865…2be37`, request `pr3b-2-revocation-halt-apply-20260902`. Second child
+of the PR3b feature-branch chain. Measured against the PR3b-1 tip, not `main`.
+
+## Scope
+
+Forward `create or replace` of `finalize_account_deletion(uuid)` adding both invitation revocation
+scopes — unaccepted rows `invited_by` the subject, or addressed to its normalized profile email —
+before the identity step, plus `if not step_failed` guards so a failed step stops every later one.
+Every PR3b-1 behaviour is preserved verbatim: `22023` guard, idempotent `done`, condemned teams
+before identity, outcome write, `service_role`-only boundary. `attempts` stays the claim's alone;
+this finalizer never increments it. No retention, sweep, trigger or scheduler — those are 3b-3's.
+
+## TDD Cycle Evidence
+
+| Task | Test | Layer | Safety Net | RED (executed) | GREEN | TRIANGULATE | REFACTOR |
+|---|---|---|---|---|---|---|---|
+| 6.1 | `tests/database/account-deletion-finalization.test.ts` | Integration | 14/14 on the PR3b-1 tip | `expected 'done' to be 'failed'` — the spine has no revocation step, so the injected fault never fires and the identity goes while both invitations live | 15/15 | both scopes + a same-address control + the halt + retry | fault injection scoped by `when (old.email = …)`, dropped in `finally` |
+| 6.2 | (driven by 6.1) | Integration | — | — | 15/15 | 2 scopes, 2 guards | replace, never drop |
+| 6.3 | `tests/database/reproducibility.test.ts` | Reproducibility | 28/28 | — | 28/28 unchanged | — | no new hunk needed; see below |
+
+**Reproducibility needed no new assertion, and that is proved rather than assumed.** `create or
+replace` preserves the function's ACL, so the existing inventory row still reads
+`service_role=X/postgres`. Replacing it with `drop` + `create` resets the ACL to `DEFAULT` and
+**four** existing assertions fail — the function inventory (`acl=DEFAULT`), the forward-revoke proof,
+and both isolation assertions, the third of which is the harm itself: every caller reaches the body,
+so the `42501` denial disappears. Generated types are byte-identical: no schema surface changed.
+
+### Mutation proof
+
+| Mutation | Observed | Restored |
+|---|---|---|
+| issued scope `i.invited_by = p_user_id` removed | Exactly 1 failed at L401, `expected [ Array(1) ] to deeply equal []` — the issued invitation survived | Yes |
+| addressed scope `or i.email = subject_email` removed | Exactly 1 failed at L382, `expected 'done' to be 'failed'` — the fault never fires, identity goes | Yes |
+| `if not step_failed` removed from the identity step | Exactly 1 failed at L386, `expected +0 to be 1` — the profile was destroyed past a failed revocation | Yes |
+| `create or replace` → `drop` + `create` | 4 failed: ACL reset to `DEFAULT`, privileged surface opened to every caller | Yes |
+
+The two scope mutations break at **different assertion lines**, so neither carries the other's proof.
+The migration was restored **byte-identically** (`diff -q`). One mutation round first reported two
+unrelated PR1 failures from the post-`db reset` JWT/container flake, and one RED run reported
+`Unknown Error: JWT issued at future`; both were **re-run and are reported only from clean runs** —
+the same flake PR1, PR2, PR3a and PR3b-1 each recorded.
+
+## Work Unit Evidence
+
+| Evidence | Value |
+|---|---|
+| Focused, exact `tasks.md` 3b-2 command (finalization + reproducibility) | **40 passed (2 files)** |
+| Extended focused suite (adds the isolation file) | **43 passed (3 files)** (42 at PR3b-1) |
+| Dirty-db rerun, no reset | **15 passed (2 files)** |
+| Full suite | `pnpm test` → **167 passed, 15 files** (166 at PR3b-1) |
+| Runtime harness | `pnpm db:smoke --require-runtime` → **SMOKE OK (static + rebuild)**, 12 migrations in order |
+| Rollback | Forward-only: a later migration `create or replace`s `finalize_account_deletion(uuid)` back to the PR3b-1 spine body, then revert the named test hunk. **Never a drop** — that would reset the ACL, as the mutation above proves. `account_deletion_requests` is never dropped and no applied migration is edited. |
+| Cleanup | Injected trigger and function dropped in a `finally`; mutation copy and helper script removed; PR3b-1 functional bytes unchanged except the intended forward replace. |
+
+## Review Budget — child diff against the PR3b-1 baseline tree
+
+Baseline: native tree `bda58baaedc46a38b9e42c46ca4ea0b229d411c0`, the PR3b-1 tip. It carries every
+PR3b-1 tracked hunk — its `account-deletion-finalization.test.ts` blob is `30d166b6…`, the recorded
+PR3b-1 parent hash — but, being a tree, it holds no untracked file. **Method:** tracked paths are
+measured by `git diff --numstat <tree>`; the two untracked migrations are counted by line and
+attributed by owner. Reproduce with `git add -N . && git diff --numstat bda58ba…`.
+
+| Path | Native (`+`/`-`) |
+|---|---|
+| `…/20260902145000_account_deletion_invitation_revocation.sql` (untracked, this child) | 76 |
+| `tests/database/account-deletion-finalization.test.ts` | 64 + 0 = 64 |
+| `apply-progress.md` (this evidence) | 96 + 3 = 99 |
+| `tasks.md` 6.1–6.3 flips and 3b-2 status corrections | 5 + 5 = 10 |
+| `design.md` 3b-2 status correction | 2 + 2 = 4 |
+| **Total** | 76 + 64 + 99 + 10 + 4 = **253 / 400**, no exception |
+| `…/20260902140000_account_deletion_finalization.sql` (untracked, PR3b-1) | 69 — **excluded**, parent-owned |
+
+## Deviations from Design
+
+**None.** Design's revocation contract — open invitations by `invited_by` or profile email, before
+the profile goes — and its step-isolation row are implemented exactly, and both have tests.
+
+## Issues Found
+
+- The issued scope only proves anything if the invitation outlives its team, so the subject invites
+  from a team it hands to a successor rather than one it condemns; a condemned team deletes its
+  invitations by cascade. The control is a third-party invitation to the **same address** as the
+  subject's own, so only the issuer distinguishes them.
+- The spine's two-step ordering was self-protecting — a failed teams step left a live owned team and
+  the restrictive owner key refused the identity anyway. Inserting revocation between them is what
+  makes the guard load-bearing, which is why it ships in this child and not the last.
+
 ## Remaining Tasks
 
-- [ ] 6.1–6.3 3b-2 revocation and ordered halt
 - [ ] 7.1–7.3 3b-3 receipt retention
 - [ ] 8.1–8.3 PR4 typed API and docs

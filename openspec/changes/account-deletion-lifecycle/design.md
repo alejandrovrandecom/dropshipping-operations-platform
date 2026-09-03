@@ -51,10 +51,10 @@ PR1–PR3a shipped `stacked-to-main`; that history stands. **The PR3b sub-chain 
 | Child | Targets | Owns | Lines |
 |---|---|---|---|
 | 3b-1 spine | tracker | `…140000_…finalization.sql` — `22023` guard, idempotent `done`, condemned teams, identity, outcome, grant; isolation file; reproducibility inventory and forward-revoke; types; no-scheduler proof | 69+138+30+24+4+6+126 = **397**, validated |
-| 3b-2 revocation + ordered halt | 3b-1 | `…145000_…invitation_revocation.sql` replaces the finalizer to run both scopes before identity and add the `if not step_failed` guards — the validated early-step continuation fix — plus its injected-fault halt case | ~**239** forecast |
+| 3b-2 revocation + ordered halt | 3b-1 | `…145000_…invitation_revocation.sql` replaces the finalizer to run both scopes before identity and add the `if not step_failed` guards — the validated early-step continuation fix — plus its injected-fault halt case | **253**, validated |
 | 3b-3 lazy retention | 3b-2 | `…150000_…receipt_retention.sql`, the sweep case and helper, trigger and body counts | ~**185** forecast |
 
-Each child must be green on its own base under focused vitest, `pnpm test` and `pnpm db:smoke --require-runtime`, with its own TDD, mutation, work-unit, runtime and rollback evidence; none defers. 3b-1 is validated at 397; 3b-2 and 3b-3 are unstarted, so aggregates 397+239+185 = **821** child-chain and 154+821 = **975** combined are forecasts. 3b-1 leaves invitations un-revoked; 3b-2 must close that before the tracker reaches `main`.
+Each child must be green on its own base under focused vitest, `pnpm test` and `pnpm db:smoke --require-runtime`, with its own TDD, mutation, work-unit, runtime and rollback evidence; none defers. 3b-1 is validated at 397 and 3b-2 at 253; 3b-3 is pending, so the child-chain aggregate 397+253+185 = **835** and the combined 154+835 = **989** stay forecasts until it lands. 3b-1 left invitations un-revoked; 3b-2 closed that before the tracker reaches `main`.
 
 **Retention.** `sweep_expired_deletion_receipts()`: a definer trigger function, `execute` revoked from `public`, `anon`, `authenticated`, `service_role`, fired `after update … when (new.state in ('done','failed'))`. Its delete sits in a `begin/exception when others then null` block, so failed cleanup leaves the receipt and never aborts the finalizer. It fires where the inline sweep did: `claim` writes only `in_progress`, idempotent `done` returns first. No extension.
 
