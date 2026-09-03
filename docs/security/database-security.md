@@ -3,7 +3,7 @@
 Tenant isolation is enforced in the database, not in application code. Row level
 security plus composite foreign keys are the wall; the client is never trusted.
 
-**Status**: identity, launch-workspace and username-reservation slices enforced. Table-by-table policy
+**Status**: identity, launch-workspace, username-reservation and account-deletion slices enforced. Table-by-table policy
 and grant inventories live in `docs/database/architecture.md` and are updated
 with every migration.
 
@@ -38,6 +38,14 @@ with every migration.
 | Direct read, write or enumeration of `username_reservations` | Refused at the privilege layer: forced RLS, no policy, and no grant of any kind to any client role. |
 | Resolution of a user outside the caller's teams | Answered with an empty set, identically to a team with no claims and to a team that does not exist — never a refusal, so it is no existence oracle. |
 | Account or profile deletion | The reservation survives, and it holds no email or profile data — only the name, the subject id and the claim instant. |
+| Any caller reaching a privileged deletion entry point | `claim_account_deletion`, `finalize_account_deletion` and `account_deletion_status` are granted to `service_role` alone. `anon`, `authenticated` and the subject itself are refused identically with `42501`, before the body runs — a caller that reached the body and got `22023` would learn its own receipt's state. |
+| Unbounded privileged retry | Three executions per receipt, counted by the claim alone. The fourth returns the frozen `failed`, and an exhausted receipt can never be finalized again. |
+| A request naming another account | Structurally impossible: the RPC names no target and writes the caller's own receipt only. |
+| A request naming an unowned or absent team | One identical `42501` for both, decided by a single ownership check rather than a foreign key, so the pair is no cross-tenant existence oracle. |
+| Direct read, write or enumeration of a receipt, a selection or a transfer offer | Refused at the privilege layer: forced RLS, no policy, and no grant of any kind to any client role. |
+| Retained history after deletion | `created_by` and `actor_user_id` go null; the facts and the append order stay readable to the team, and no deleted email or display name survives anywhere. |
+| Session issued before final deletion | Denied afterwards without restoring identity or tenant associations; a same-email signup is an unrelated UUID. |
+| Receipt retention failing | The purge runs inside a block that discards every error, so a failed cleanup leaves the receipt and never aborts the finalizer. The MAY cannot regress a MUST. |
 
 ## Key handling
 
@@ -160,7 +168,21 @@ rollback path removes the registry.
 
 **Gotcha.** `has_username()` is granted to nobody. It is the gate's own question, and an exposed
 predicate would be exactly the reservation-status oracle that the closed registry exists to prevent.
-The typed API covers only `claimUsername` and `resolveTeamUsernames`.
+
+**The typed API wraps only what the database grants `authenticated`.** That is
+`claimUsername`, `resolveTeamUsernames`, `offerTeam`, `acceptTeam` and
+`requestAccountDeletion`. The three `service_role` deletion functions are deliberately absent from
+`src/`: an application wrapper around the status read would be an oracle over another account's
+deletion, and one around the claim or the finalizer would move the admission point out of the
+database. `tests/database/identity-module.test.ts` asserts that absence across `src/modules/`, and
+that the string `service_role` appears in no source file at all — grants live in SQL alone.
+
+`tests/database/account-deletion-finalization.test.ts`,
+`tests/identity/account-deletion.test.ts` and `tests/isolation/account-deletion-rls.test.ts` prove
+the deletion boundary: the four caller kinds refused at all three privileged entry points, the
+bounded retry and its refused fourth claim, both invitation revocation scopes, the ordered halt on
+an injected fault, the terminal-only and age-bounded purge, and an injected cleanup failure that
+leaves the run `done`.
 
 **Gotcha.** `insert ... returning` evaluates the `select` policy before
 after-insert triggers run. A read policy that depends on a row written by such a

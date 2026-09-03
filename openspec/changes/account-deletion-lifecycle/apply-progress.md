@@ -4,7 +4,8 @@
 `feature-branch-chain`** behind draft tracker `pr3b-finalizer` at `9a17fb1`, with children 3b-1 →
 3b-2 → 3b-3 targeting each other and only the tracker reaching `main`. PR4 follows the tracker.
 One `size:exception` stands, scoped to **PR3a alone** at 415 native lines; the rejected 480-line
-PR3b exception is withdrawn. 3b-1 is measured at 397, 3b-2 at 253, 3b-3 at 264; Phase 8 is pending.
+PR3b exception is withdrawn. 3b-1 is measured at 397, 3b-2 at 253, 3b-3 at 264 and PR4 at 385.
+**All 24 tasks are complete.**
 
 ## Completed Tasks
 
@@ -29,8 +30,9 @@ PR3b exception is withdrawn. 3b-1 is measured at 397, 3b-2 at 253, 3b-3 at 264; 
 - [x] 7.1 RED — terminal-only, age-bounded, capped purge; injected cleanup fault cannot abort a run
 - [x] 7.2 GREEN — `20260902150000_account_deletion_receipt_retention.sql` (trigger, not a sweep)
 - [x] 7.3 REFACTOR/evidence — trigger/function inventories, definer bodies 23→24, mutation, rollback
-
-Phase 8 (PR4) remains unstarted.
+- [x] 8.1 RED — typed wrapper path through the service, and no privileged entry point in `src/`
+- [x] 8.2 GREEN — `src/modules/identity/{types,repository,service}.ts` request/transfer wrappers
+- [x] 8.3 REFACTOR/evidence — architecture, operations and security docs; mutation; budget
 
 > Two attempts in this file are **historical**, and neither contributes a completed task above.
 > The combined Unit 2 was carved into PR2a and PR2b, both green. The combined **PR3** was
@@ -1064,6 +1066,113 @@ purge-time guarantee, so a gradual drain is conforming.
 - Purging is bounded but not scheduled, so a table nobody finalizes against is never swept. That is
   the spec's position, not an oversight: no timing guarantee is offered and none is implied.
 
-## Remaining Tasks
+---
 
-- [ ] 8.1–8.3 PR4 typed API and docs
+# PR4 — `pr4-authenticated-wrappers-docs` (follows the tracker, entering no child)
+
+Request `phase8-pr4-apply-20260902`, attempt ordinal 22. Measured against the pre-Phase-8 tree
+`2768b1e840ad944954cb6a2e35a93fcf086d76f1`, written from the worktree exactly as PR3b-3 left it, so
+every PR1–PR3b hunk — the three untracked migrations included — is baseline here and none of it is
+counted below.
+
+## Scope
+
+Ships the typed wrappers for the three deletion RPCs the database grants `authenticated`, and the
+documentation the whole change deferred to this slice. **No migration, no schema object, no grant
+and no generated type changes**, which is why the reproducibility suite needed no new assertion and
+`src/lib/database.types.ts` is byte-identical. The three `service_role` functions are deliberately
+absent from `src/`, and their absence is asserted rather than assumed.
+
+## TDD Cycle Evidence
+
+| Task | Test | Layer | Safety Net | RED (executed) | GREEN | TRIANGULATE | REFACTOR |
+|---|---|---|---|---|---|---|---|
+| 8.1 | `tests/identity/account-deletion.test.ts` | Integration | 11/11 passed | `TypeError: service.requestAccountDeletion is not a function` | 12/12 | refusal, then the identical call admitted, plus the recorded selection | `serviceFor` helper |
+| 8.1 | `tests/database/identity-module.test.ts` | Integration | 5/5 passed | 2 failed: `expected '…' to contain '.rpc("request_account_deletion"'` and the missing `Functions["request_account_deletion"]` projection | 6/6 | granted trio present, privileged trio absent, `service_role` absent | `sources()` walker extracted |
+| 8.2 | (driven by 8.1) | Integration | — | — | 18/18 | 3 wrappers, 3 projected types | wrappers named for the use case, not the RPC |
+| 8.3 | docs | — | — | — | — | — | three docs updated in this slice |
+
+RED was executed, not assumed: 3 tests failed before the wrappers existed, one naming a method the
+service did not have and two naming source the repository and the types file did not contain.
+
+**One half of one assertion is a guard, not RED-driven, and is reported as such.** `src/` named no
+privileged RPC and no `service_role` before this slice, so that half passed already — the same
+honesty PR3b-1 recorded for its no-scheduler proof. It is paired with the positive half, which was
+genuinely RED, and mutation below proves the guard is not a ghost.
+
+### Mutation proof
+
+| Mutation | Expected | Observed | Restored |
+|---|---|---|---|
+| `service.requestAccountDeletion` drops its `deleteTeamIds` argument | only the wrapper test breaks | Exactly 1 failed: `identity: request account deletion failed: deletion: owned teams are unresolved` — the condemned team was never named | Yes |
+| `repository.requestTeamOwnershipTransfer` swaps team and recipient | only the wrapper test breaks | Exactly 1 failed: `identity: request ownership transfer failed: transfer: offer not permitted` | Yes |
+| a module comment made to contain `account_deletion_status` | only the boundary test breaks | Exactly 1 failed: `expected '// Identity use cases. account_deleti…' not to contain 'account_deletion_status'` | Yes |
+| a source comment made to contain `service_role` | only the boundary test breaks | Exactly 1 failed: `expected '// Identity domain types, never servi…' not to contain 'service_role'` | Yes |
+
+Four disjoint failures at four different assertions, so no wrapper and no guard carries another's
+proof. The three module files were restored **byte-identically** after every round, verified by
+`sha256sum -c` against the pre-mutation copies (`repository.ts` `e2d153b5…`, `service.ts`
+`8efaf741…`, `types.ts` `7b3214e3…`).
+
+## Work Unit Evidence
+
+| Evidence | Value |
+|---|---|
+| Focused | `pnpm exec vitest run tests/database/identity-module.test.ts tests/identity/account-deletion.test.ts` → **18 passed (2 files)** (16 at the baseline) |
+| Dirty-db rerun, no reset | The same two files against the database the full suite left → **18 passed (2 files)** |
+| Full suite | `pnpm test` → **171 passed, 15 files** (169 at PR3b-3; PR4 adds two behavioural tests and no file) |
+| Runtime harness | `pnpm db:smoke --require-runtime` → **SMOKE OK (static + rebuild)**, 13 migrations applied in order |
+| Generated types | `pnpm -s db:types` re-run after the rebuild and `diff -q` against the committed file → **byte-identical**; this slice changes no schema surface |
+| Rollback | Revert the additive hunks in `src/modules/identity/{types,repository,service}.ts`, in the two test files and in the three docs. Nothing else is touched: no migration, no grant, no generated type, and no PR1–PR3b behaviour. The database is unaffected either way, because this slice only wraps RPCs that already exist. |
+| Cleanup | Pre-mutation copies and the regenerated type file live under `/tmp/opencode/phase8/`, outside the repository; the working tree holds no scratch file. Budget accounting used a throwaway `GIT_INDEX_FILE`, so the real index was never staged. |
+
+## Review Budget — slice diff against the pre-Phase-8 tree
+
+**Method:** both trees are written from the full worktree into a temporary index
+(`GIT_INDEX_FILE=… git add -A && git write-tree`) and compared with
+`git diff-tree -r --numstat`, so the three untracked PR3b migrations are present on **both** sides
+and correctly contribute zero. Reproduce against `2768b1e8…`.
+
+| Path | Native (`+`/`-`) |
+|---|---|
+| `docs/database/architecture.md` | 105 + 14 = 119 |
+| `tests/identity/account-deletion.test.ts` | 32 |
+| `docs/security/database-security.md` | 24 + 2 = 26 |
+| `docs/database/operations.md` | 24 |
+| `tests/database/identity-module.test.ts` | 22 |
+| `src/modules/identity/service.ts` | 15 + 1 = 16 |
+| `src/modules/identity/repository.ts` | 12 + 1 = 13 |
+| `src/modules/identity/types.ts` | 6 |
+| `tasks.md` 8.1–8.3 flips and the forecast line | 4 + 4 = 8 |
+| `apply-progress.md` (this evidence) | 114 + 5 = 119 |
+| **Total** | **385 / 400**, no exception |
+
+The three PR3b migrations, `src/lib/database.types.ts` and every PR1–PR3b test hunk measure **0**:
+they are identical on both sides of the baseline. Docs are 169 of the 385 because this slice is
+where the whole change's documentation debt was deliberately parked — `design.md` says PR4 alone
+adds `src/modules/identity/` and docs, and seven migrations' worth of schema, threat boundaries and
+operator runbook land here at once. No compression was needed, so every argument is intact.
+
+## Deviations from Design
+
+**One, and it is a narrowing of the task text rather than of the design.** `tasks.md` 8.1 asks for
+"no `service_role` in `src/`". Taken literally across the whole tree, the privileged **RPC names**
+cannot be excluded from `src/lib/database.types.ts`: the generated file restates every function the
+database has, which is what makes it generated. The assertion is therefore split, and both halves
+are stronger than one loose scan — `service_role` itself must appear in **no** source file at all,
+generated one included, and the three privileged RPC names must appear in **no** file under
+`src/modules/`. Design is implemented as written: only `authenticated` RPCs reach `src/`.
+
+## Issues Found
+
+- The module's `types.ts` is pinned by an existing assertion that every exported type is projected
+  from `Tables["` or `Functions["`. Spelling the receipt state as
+  `Enums["account_deletion_state"]` would have failed it. It is projected from
+  `Functions["request_account_deletion"]["Returns"]` instead, which is both admissible and more
+  faithful: the wrapper's answer *is* that RPC's return type, so a signature change arrives here.
+- The wrappers are named for the use case (`offerTeam`, `acceptTeam`, `requestAccountDeletion`) and
+  not for the RPC, matching the launch module. The repository keeps the RPC-shaped names, which is
+  what the boundary test reads.
+- `service.requestAccountDeletion()` defaults its array to `[]`. The mutation round shows why that
+  default is not the same as ignoring the argument: dropping the parameter leaves a condemned team
+  unresolved and the database refuses, which is exactly the failure observed.

@@ -10,3 +10,9 @@ export type Membership = Tables["memberships"]["Row"];
 /** The claim's answer is the stored name, which the database normalizes; the registry itself is unreadable. */
 export type Username = Functions["claim_username"]["Returns"];
 export type TeamUsername = Functions["resolve_team_usernames"]["Returns"][number];
+/** The receipt's observable state, taken from the RPC that answers with it; the table is unreadable. */
+export type AccountDeletionState = Functions["request_account_deletion"]["Returns"];
+/** An offer is identified only by the id its own RPC returns: the transfer table holds no grant. */
+export type TransferId = Functions["request_team_ownership_transfer"]["Returns"];
+/** Acceptance answers with the team that moved, so the caller needs no read to confirm it. */
+export type TransferredTeamId = Functions["accept_team_ownership_transfer"]["Returns"];
