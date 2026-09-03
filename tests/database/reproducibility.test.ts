@@ -33,13 +33,15 @@ const INVENTORY: Array<[string, string, string[]]> = [
     "memberships: created_at timestamp with time zone, id uuid, team_id uuid, user_id uuid",
     "profiles: created_at timestamp with time zone, display_name text, email text, user_id uuid",
     "team_invitations: accepted_at timestamp with time zone, accepted_by uuid, created_at timestamp with time zone, email text, expires_at timestamp with time zone, id uuid, invited_by uuid, team_id uuid, token_hash text",
-    "teams: created_at timestamp with time zone, id uuid, name text, owner_user_id uuid"]],
+    "teams: created_at timestamp with time zone, id uuid, name text, owner_user_id uuid",
+    "username_reservations: claimed_at timestamp with time zone, user_id uuid, username text"]],
   ["row level security, enabled and forced", `select relname || ': rls=' || relrowsecurity || ' forced='
     || relforcerowsecurity as fact ${PUBLIC_TABLES} order by 1`, [
     "launch_checklist_items: rls=true forced=true", "launch_checklist_template_items: rls=true forced=true",
     "launch_checklist_templates: rls=true forced=true", "launch_checklists: rls=true forced=true",
     "launch_events: rls=true forced=true", "launches: rls=true forced=true", "memberships: rls=true forced=true",
-    "profiles: rls=true forced=true", "team_invitations: rls=true forced=true", "teams: rls=true forced=true"]],
+    "profiles: rls=true forced=true", "team_invitations: rls=true forced=true", "teams: rls=true forced=true",
+    "username_reservations: rls=true forced=true"]],
   ["policy inventory", `select tablename || ': ' || string_agg(policyname || '/' || cmd || '/' ||
     array_to_string(roles, '+'), ', ' order by policyname) as fact from pg_policies
     where schemaname = 'public' group by tablename order by 1`, [
@@ -63,7 +65,10 @@ const INVENTORY: Array<[string, string, string[]]> = [
     "launches: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres, authenticated=r/postgres",
     "memberships: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres, authenticated=rd/postgres",
     "profiles: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres, authenticated=r/postgres",
-    "team_invitations: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres, authenticated=rd/postgres", "teams: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres, authenticated=rd/postgres"]],
+    "team_invitations: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres, authenticated=rd/postgres", "teams: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres, authenticated=rd/postgres",
+    // The registry is the one table with no client privilege at all: no `select`, so no read and no
+    // enumeration; no write, so the claim RPC is the only door and the reservation is immutable.
+    "username_reservations: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres"]],
   ["column grants", `select c.relname || '.' || a.attname || ': ' || array_to_string(a.attacl, ', ') as fact
     from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = 'public' and a.attacl is not null order by 1`, [
@@ -80,6 +85,7 @@ const INVENTORY: Array<[string, string, string[]]> = [
     as fact from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' order by 1`, [
     'accept_invitation: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'apply_checklist_template: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
+    'claim_username: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'create_invitation: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'create_launch: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'ensure_owner_membership: secdef=true config=search_path="" acl=postgres=X/postgres',
@@ -125,6 +131,20 @@ const INVENTORY: Array<[string, string, string[]]> = [
     "launch_checklists: launch_checklists_launch_id_key/unique, launch_checklists_pkey/unique, launch_checklists_team_id_id_key/unique, launch_checklists_team_id_origin_template_id_idx/plain",
     "launch_events: launch_events_pkey/unique, launch_events_team_id_launch_id_idx/plain, launch_events_team_id_seq_idx/plain",
     "launches: launches_pkey/unique, launches_team_id_id_key/unique"]],
+  // The registry's absent foreign key is a decision, not an omission: a reservation has to outlive
+  // the account that made it, and every referential action destroys exactly that. Inventorying the
+  // constraints is what keeps a later "fix" from quietly adding one. The two unique keys are the
+  // whole contract: the primary key makes a name global, `user_id` makes a claim one-time.
+  ["username registry constraint inventory", `select con.conname || '/' || con.contype::text as fact
+    from pg_constraint con join pg_class c on c.oid = con.conrelid join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and c.relname = 'username_reservations' order by 1`, [
+    "username_reservations_pkey/p", "username_reservations_user_id_key/u", "username_reservations_username_check/c"]],
+  ["username registry index inventory", `select i.relname || '/' ||
+    case when x.indisunique then 'unique' else 'plain' end as fact from pg_index x
+    join pg_class c on c.oid = x.indrelid join pg_class i on i.oid = x.indexrelid
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and c.relname = 'username_reservations' order by 1`, [
+    "username_reservations_pkey/unique", "username_reservations_user_id_key/unique"]],
 ];
 it.each(INVENTORY)("matches the documented %s", async (_label, query, expected) => {
   expect(await facts(query)).toEqual(expected);
@@ -144,7 +164,7 @@ it("references every object in a definer body through a schema qualifier", async
   // relation target -- `from`, `join`, `insert into`, `update` -- while skipping `do update set`
   // and plpgsql's `returning ... into <variable>`, neither of which names a relation.
   const bodies = await facts("select prosrc as fact from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'");
-  expect(bodies).toHaveLength(13);
+  expect(bodies).toHaveLength(14);
   for (const body of bodies)
     for (const [, ref] of body.matchAll(/\b(?:from|join|insert\s+into|update)\s+(?!set\b)([a-z_][\w.]*)/gi)) expect(ref).toContain(".");
 });
@@ -170,6 +190,28 @@ it("adds exactly six launch tables and two launch enums", async () => {
     "launch_checklists", "launch_events", "launches"]);
   expect(await facts(`select t.typname::text as fact from pg_type t join pg_namespace n on n.oid = t.typnamespace
     where n.nspname = 'public' and t.typtype = 'e' order by 1`)).toEqual(["launch_event_kind", "launch_status"]);
+});
+it("closes the claim through a forward revoke that never drops the registry", async () => {
+  // Rollback for this slice is asymmetric on purpose. Revoking `execute` closes new claims, but
+  // dropping the table would destroy permanent reservations, so the table is deliberately absent
+  // from the revoke below. As above, the block always aborts, proving the path and undoing it.
+  await expect(sql(`do $$
+    begin
+      revoke execute on function public.claim_username(text) from authenticated;
+      if pg_catalog.has_function_privilege('authenticated', 'public.claim_username(text)', 'execute') then
+        raise exception 'forward revoke left execute open';
+      end if;
+      if pg_catalog.to_regclass('public.username_reservations') is null then
+        raise exception 'rollback must never drop the registry';
+      end if;
+      raise exception 'forward revoke verified';
+    end $$;`)).rejects.toThrow("forward revoke verified");
+
+  // The aborted block restored the grant, and the registry was never at risk in the first place.
+  expect(await facts(`select p.proname::text || '=' ||
+    pg_catalog.has_function_privilege('authenticated', p.oid, 'execute')::text as fact
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = 'claim_username'`)).toEqual(["claim_username=true"]);
 });
 it("closes the launch surface through a forward revoke, leaving applied migrations untouched", async () => {
   // Rollback here is forward-only: a *new* migration revokes the grants and the execute privilege,

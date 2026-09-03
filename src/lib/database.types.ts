@@ -442,6 +442,24 @@ export type Database = {
           },
         ]
       }
+      username_reservations: {
+        Row: {
+          claimed_at: string
+          user_id: string
+          username: string
+        }
+        Insert: {
+          claimed_at?: string
+          user_id: string
+          username: string
+        }
+        Update: {
+          claimed_at?: string
+          user_id?: string
+          username?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
@@ -452,6 +470,7 @@ export type Database = {
         Args: { p_launch_id: string; p_template_id: string }
         Returns: string
       }
+      claim_username: { Args: { p_username: string }; Returns: string }
       create_invitation: {
         Args: { invitee_email: string; target_team_id: string }
         Returns: string
