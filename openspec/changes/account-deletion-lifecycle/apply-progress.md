@@ -1,9 +1,10 @@
 # Apply Progress: Account Deletion Lifecycle
 
-**Mode**: Strict TDD · **Delivery**: chained PR slices, `stacked-to-main`. One `size:exception`, and
-it is scoped: the maintainer accepted it for the **PR3a candidate alone**, at 415 native changed
-lines. PR1, PR2a and PR2b landed inside the 400-line budget without one, and **PR3b, PR4 and every
-later slice retain the 400-line budget** — this exception does not travel down the chain.
+**Mode**: Strict TDD. **Delivery**: PR1–PR3a landed `stacked-to-main`; **PR3b alone uses
+`feature-branch-chain`** behind draft tracker `pr3b-finalizer` at `9a17fb1`, with children 3b-1 →
+3b-2 → 3b-3 targeting each other and only the tracker reaching `main`. PR4 follows the tracker.
+One `size:exception` stands, scoped to **PR3a alone** at 415 native lines; the rejected 480-line
+PR3b exception is withdrawn. 3b-1 is measured at 397; 3b-2 and 3b-3 are forecasts, not yet proven.
 
 ## Completed Tasks
 
@@ -19,8 +20,11 @@ later slice retain the 400-line budget** — this exception does not travel down
 - [x] 4.1 RED — bounded `pending`/`failed` claims, the refused fourth, and `tests/isolation/account-deletion-rls.test.ts`
 - [x] 4.2 GREEN — `20260902130000_account_deletion_claim_ledger.sql`
 - [x] 4.3 REFACTOR/evidence — claim/status inventories, `service_role` grants, forward revoke, types
+- [x] 5.1 RED — spine: service-role denial, `22023` guard, teams→identity, retry, session/re-signup, no scheduler
+- [x] 5.2 GREEN — `20260902140000_account_deletion_finalization.sql` (spine only)
+- [x] 5.3 REFACTOR/evidence — function inventory, definer bodies 22→23, forward revoke, types
 
-Phases 5 (PR3b finalizer) and 6 (PR4 typed API) remain unstarted.
+Phases 6 (3b-2 revocation/halt), 7 (3b-3 retention) and 8 (PR4) remain unstarted.
 
 > Two attempts in this file are **historical**, and neither contributes a completed task above.
 > The combined Unit 2 was carved into PR2a and PR2b, both green. The combined **PR3** was
@@ -489,7 +493,7 @@ green) and **PR3b** (the finalizer, unchanged — not started). Its content hash
 `sha256:c3cf34b070a4ad783f46b0cc1e910337d8e35f8a9a185607e08e508441db7e1b` carries no retry budget.
 Nothing below this heading is claimed as completed work; it is kept because PR3b is reconstructed
 from it, exactly as PR2b was reconstructed from the combined Unit 2. The verified finalizer body and
-its tests were copied out of the worktree to `/tmp/opencode/pr3-combined-backup/` before the carve.
+its tests were copied to `/tmp/opencode/pr3-combined-backup/` before the carve (now unavailable).
 
 Attempt ordinal 7, generation 6, work unit `pr3-account-deletion-finalization`,
 revision `sha256:fa1cf4350bbcbf6a7e60540cb4117140518b59118074cf30f5813090810513a2`.
@@ -755,8 +759,8 @@ an exhausted, a completed and an unknown subject is byte-for-byte the answer a s
 ## PR3b reconstruction notes
 
 Preserved so PR3b needs no rediscovery. Its migration is `20260902140000_account_deletion_finalization.sql`
-and its body is the verified one in `/tmp/opencode/pr3-combined-backup/`, minus the `status` and
-`claim` functions PR3a now owns: three per-step `begin/exception` blocks in the order teams →
+and its body is preserved in `/tmp/opencode/pr3b-monolith-backup-20260902/` (non-authoritative and
+temporally mixed), minus `status`/`claim`: three per-step `begin/exception` blocks, order teams →
 invitations (both scopes, unaccepted only) → `auth.users`; a `22023` refusal for anything not
 `in_progress`; `done`/`failed` written by `finalize` alone; the lazy purge with its 30-day age
 predicate and **no** self-exclusion clause (proved dead code by mutation — the same statement stamps
@@ -765,7 +769,109 @@ makes the age predicate discriminating. `case … end` must be cast `::public.ac
 The isolation file's `PRIVILEGED` array and the reproducibility function inventory, definer-body
 count (22 → 23) and forward-revoke proof each gain `finalize_account_deletion`.
 
+---
+
+# PR3b-1 — `pr3b-1-spine` (child of tracker `pr3b-finalizer` at `9a17fb1`)
+
+Attempt token `sha256:44e16002…6ccd4`, request `pr3b-1-spine-apply-20260902`; remediates evidence
+`sha256:d1130df6…1a9b4ce`. First child of the PR3b feature-branch chain, targeting the tracker.
+
+**Superseded history.** A monolithic PR3b candidate was corrected and green but measured 575 native
+lines and was rejected; its 480-line exception is withdrawn and it is **source, not evidence**,
+claiming no completion state here. It survives at `/tmp/opencode/pr3b-monolith-backup-20260902/`
+(13 manifested entries plus the self-excluded `MANIFEST.sha256`,
+`1d2ad956a38b47b62453e3922c0e0c82893932a6505e3be49ea9c60d0a6e54b3`), whose `fragments/` hold what
+this child excludes — the 3b-2 ordered-halt RED test and revocation step, the 3b-3 sweep test and
+inline purge. That bundle is non-authoritative and temporally mixed; the current proposal, specs,
+`design.md` and `tasks.md` are authoritative.
+
+## Scope
+
+Ships the finalizer **spine** and the third `service_role` grant: the `22023` guard for every state
+but `in_progress`, the idempotent `done` answer, condemned teams before the auth identity, the
+outcome write, and the grant. No new table, column, enum, trigger, policy or index. Absent by child
+boundary: **invitation revocation and the `if not step_failed` ordered halt (3b-2)** and **receipt
+retention (3b-3)**. This child therefore leaves invitations un-revoked — why children target each
+other, not `main`: every MUST is to hold before the tracker merges, once 3b-2 lands. PR4 untouched.
+
+## TDD Cycle Evidence
+
+The carve did not inherit chronology. The finalizer was **removed from the repository candidate**
+and the carved tests were executed against a ten-migration schema, so RED below is this child's own.
+
+| Task | Test | Layer | Safety Net | RED (executed on the carved candidate) | GREEN | TRIANGULATE | REFACTOR |
+|---|---|---|---|---|---|---|---|
+| 5.1 | `tests/database/account-deletion-finalization.test.ts` | Integration | 7/7 pre-finalizer describes passed | 4 failed `42883`, `function public.finalize_account_deletion(unknown) does not exist` | 11/11 | 3 outcome cases + the unclaimed control | `finalize`/`profiles`/`teamCount` helpers |
+| 5.1 | `tests/isolation/account-deletion-rls.test.ts` | Integration | 1/3 passed | 2 failed: `PGRST202` where `42501` is required, and a two-entry privilege set | 3/3 | 4 caller kinds × 3 entry points | one set assertion |
+| 5.2 | (driven by 5.1) | Integration | — | — | 14/14 | 2 steps, 1 guard, 1 idempotent answer | — |
+| 5.3 | `tests/database/reproducibility.test.ts` | Reproducibility | 28/28 | function inventory, definer bodies 22→23, generated types | 28/28 | inventory + forward-revoke extended | revoke covers all three entry points |
+
+**One assertion is honestly not RED-driven, and is reported as such.** The no-scheduler proof
+(`pg_cron`/`pg_net` absent) passed before the spine existed: it is a schema guard this child carries
+per design, paired with a real behavioural one — an unclaimed receipt stays `pending`.
+
+### Mutation proof
+
+| Mutation | Expected | Observed | Restored |
+|---|---|---|---|
+| `grant … to service_role, authenticated` | only isolation breaks | Exactly 2, both isolation; the harm is the first: the caller reaches the body and gets `22023`, a state oracle, instead of `42501` | Yes |
+| `22023` guard removed | only the two refusal assertions break | Exactly 2; the harm is `expected 'done'` — an **exhausted** receipt finalized anyway, defeating PR3a's bound | Yes |
+| idempotent `done` early return removed | only the completed-retry case breaks | Exactly 1: `expected { code: '22023' } to be 'done'` | Yes |
+| condemned-teams step neutered to `perform 1` | only the outcome cases break | Exactly 3, each `expected 'failed' to be 'done'` — the restrictive owner key refusing an identity whose team still stands | Yes |
+
+Four disjoint groups, so no guard carries another's proof; the migration was restored
+**byte-identically** after every round (`diff -q`). Two rounds first reported suite-level failures
+from a post-`db reset` flake; both were **re-run individually and reported only from clean re-runs**.
+
+## Work Unit Evidence
+
+| Evidence | Value |
+|---|---|
+| Focused (exact `tasks.md` command) | `pnpm exec vitest run tests/{database/account-deletion-finalization,isolation/account-deletion-rls,database/reproducibility}.test.ts` → **42 passed (3 files)** |
+| Dirty-db rerun, no reset | The two behavioural files against the database the previous run left → **14 passed (2 files)** |
+| Full suite | `pnpm test` → **166 passed, 15 files** (162 at PR3a; the spine adds four) |
+| Runtime harness | `pnpm db:smoke --require-runtime` → **SMOKE OK (static + rebuild)**, 11 migrations applied in order |
+| Rollback | Per design: revoke `execute` on `finalize_account_deletion(uuid)` from `service_role`, then drop the function; revert the named hunks in the three test files and regenerate types. Never drop `account_deletion_requests`. PR1–PR3a untouched, no applied migration edited. |
+| Cleanup | Mutation copy and helper scripts removed from the worktree; only the seven child paths differ. |
+
+## Review Budget — child diff against the tracker base
+
+The tracker owns planning: `design.md` 73 + `tasks.md` restructure 81 = 154, none of it counted
+here. This child owns 6 checkbox-flip lines, its implementation, tests, types and this evidence.
+
+| Path | Native (`+`/`-`) |
+|---|---|
+| `supabase/migrations/20260902140000_account_deletion_finalization.sql` | 69 |
+| `tests/database/account-deletion-finalization.test.ts` | 127 + 11 = 138 |
+| `tests/database/reproducibility.test.ts` | 19 + 11 = 30 |
+| `tests/isolation/account-deletion-rls.test.ts` | 13 + 11 = 24 |
+| `src/lib/database.types.ts` | 4 |
+| `tasks.md` 5.1–5.3 flips | 6 |
+| `apply-progress.md` (this evidence section) | 116 + 10 = 126 |
+| **Total** | 69 + 138 + 30 + 24 + 4 + 6 + 126 = **397 / 400**, no exception |
+
+## Deviations from Design
+
+**None.** The spine answers `done` with `done` and refuses every other state with `22023` — what the
+current design requires, since its child table names the idempotent `done` as 3b-1's own and the
+spec's *Done request is retried* scenario demands the same. `pending` is refused, so the observable
+`in_progress` cannot be skipped, and `failed` is refused, so an exhausted receipt stays frozen.
+*Historical only:* an earlier design revision worded that row as rejecting anything not
+`in_progress`, literally excluding `done`. That wording is gone, so this is no longer a deviation.
+
+## Issues Found
+
+- PR3a's stand-in assertion — that `public` held no `finalize%` function — necessarily broke when the
+  spine shipped, and became the real refusal it held the place for: an exhausted `failed` receipt is
+  refused `22023`. The only pre-existing assertion this child changed, and PR3a predicted it.
+- The spine needs no `if not step_failed` guard: with two steps, a failed teams step leaves a live
+  owned team and `teams_owner_user_id_fkey` refuses the identity delete by itself. The guard becomes
+  load-bearing in 3b-2, where the invitation step sits between them — where the defect was found.
+- The definer-body audit was run against the spine body before its first execution, because `prosrc`
+  includes comments; it passed first time and the count moves 22 → 23.
+
 ## Remaining Tasks
 
-- [ ] 5.1–5.3 PR3b finalizer
-- [ ] 6.1–6.3 PR4 typed API and ledger
+- [ ] 6.1–6.3 3b-2 revocation and ordered halt
+- [ ] 7.1–7.3 3b-3 receipt retention
+- [ ] 8.1–8.3 PR4 typed API and docs
