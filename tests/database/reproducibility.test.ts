@@ -111,18 +111,50 @@ const INVENTORY: Array<[string, string, string[]]> = [
     "launch_status: preparing, active, archived, discarded, trash"]],
   // Tenant safety here is structural, not procedural: every descendant reaches its team through a
   // composite key, so `f/c` on a `(team_id, parent_id)` foreign key is what makes a cross-tenant
-  // parent unrepresentable. `f/r` protects `profiles` from disappearing under a launch record, and
-  // `f/n` is the PostgreSQL 17 column-list `set null` that clears only `origin_template_id`.
+  // parent unrepresentable. Every authoring reference is `f/n`: a launch record is a fact about the
+  // team, so a finally deleted account clears its own name and leaves the row standing. The one
+  // `f/n` that is not about deletion is the PostgreSQL 17 column-list `set null` on
+  // `origin_template_id`, which clears the origin pointer alone and never the `not null` team.
   ["launch constraint inventory", `select c.relname || ': ' || string_agg(con.conname || '/' || con.contype::text ||
     case when con.contype = 'f' then '/' || con.confdeltype::text else '' end, ', ' order by con.conname) as fact
     from pg_constraint con join pg_class c on c.oid = con.conrelid join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = 'public' and c.relname like 'launch%' group by c.relname order by 1`, [
-    "launch_checklist_items: launch_checklist_items_checklist_fkey/f/c, launch_checklist_items_created_by_fkey/f/r, launch_checklist_items_label_check/c, launch_checklist_items_pkey/p, launch_checklist_items_position_check/c",
-    "launch_checklist_template_items: launch_checklist_template_items_created_by_fkey/f/r, launch_checklist_template_items_label_check/c, launch_checklist_template_items_pkey/p, launch_checklist_template_items_position_check/c, launch_checklist_template_items_template_fkey/f/c",
-    "launch_checklist_templates: launch_checklist_templates_created_by_fkey/f/r, launch_checklist_templates_name_check/c, launch_checklist_templates_pkey/p, launch_checklist_templates_team_fkey/f/c, launch_checklist_templates_team_id_id_key/u",
-    "launch_checklists: launch_checklists_created_by_fkey/f/r, launch_checklists_launch_fkey/f/c, launch_checklists_launch_id_key/u, launch_checklists_origin_template_fkey/f/n, launch_checklists_pkey/p, launch_checklists_team_id_id_key/u",
-    "launch_events: launch_events_actor_fkey/f/r, launch_events_kind_status_check/c, launch_events_launch_fkey/f/c, launch_events_pkey/p",
-    "launches: launches_created_by_fkey/f/r, launches_name_check/c, launches_pkey/p, launches_team_fkey/f/c, launches_team_id_id_key/u, launches_trash_prior_status_check/c"]],
+    "launch_checklist_items: launch_checklist_items_checklist_fkey/f/c, launch_checklist_items_created_by_fkey/f/n, launch_checklist_items_label_check/c, launch_checklist_items_pkey/p, launch_checklist_items_position_check/c",
+    "launch_checklist_template_items: launch_checklist_template_items_created_by_fkey/f/n, launch_checklist_template_items_label_check/c, launch_checklist_template_items_pkey/p, launch_checklist_template_items_position_check/c, launch_checklist_template_items_template_fkey/f/c",
+    "launch_checklist_templates: launch_checklist_templates_created_by_fkey/f/n, launch_checklist_templates_name_check/c, launch_checklist_templates_pkey/p, launch_checklist_templates_team_fkey/f/c, launch_checklist_templates_team_id_id_key/u",
+    "launch_checklists: launch_checklists_created_by_fkey/f/n, launch_checklists_launch_fkey/f/c, launch_checklists_launch_id_key/u, launch_checklists_origin_template_fkey/f/n, launch_checklists_pkey/p, launch_checklists_team_id_id_key/u",
+    "launch_events: launch_events_actor_fkey/f/n, launch_events_kind_status_check/c, launch_events_launch_fkey/f/c, launch_events_pkey/p",
+    "launches: launches_created_by_fkey/f/n, launches_name_check/c, launches_pkey/p, launches_team_fkey/f/c, launches_team_id_id_key/u, launches_trash_prior_status_check/c"]],
+  // The identity side of the same boundary, and the reason the relaxation is safe to make. Both
+  // invitation participants are `f/n`, so a canceled or accepted invitation outlives its people.
+  // The two that stay strict are the contract: `teams_owner_user_id_fkey/f/r` is what refuses to
+  // delete an account still holding a live team, and `memberships_user_id_fkey/f/c` is what makes a
+  // membership a live relationship rather than history. Weakening either one fails right here.
+  ["identity and invitation constraint inventory", `select c.relname || ': ' || string_agg(con.conname || '/' ||
+    con.contype::text || case when con.contype = 'f' then '/' || con.confdeltype::text else '' end, ', '
+    order by con.conname) as fact from pg_constraint con join pg_class c on c.oid = con.conrelid
+    join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public'
+    and c.relname in ('memberships', 'profiles', 'team_invitations', 'teams') group by c.relname order by 1`, [
+    "memberships: memberships_pkey/p, memberships_team_id_fkey/f/c, memberships_team_id_id_key/u, memberships_user_id_fkey/f/c",
+    "profiles: profiles_pkey/p, profiles_user_id_fkey/f/c",
+    "team_invitations: team_invitations_accepted_by_fkey/f/n, team_invitations_invited_by_fkey/f/n, team_invitations_pkey/p, team_invitations_team_id_fkey/f/c, team_invitations_token_hash_key/u",
+    "teams: teams_name_check/c, teams_owner_user_id_fkey/f/r, teams_pkey/p"]],
+  // `set null` is only half a relaxed reference: on a required column the referential action would
+  // raise a fresh violation and refuse the deletion again, so nullability is inventoried beside the
+  // actions. The four columns that stay `required` are as much of the contract as the eight that do
+  // not -- a team keeps its owner, a membership keeps its member.
+  ["deletion reference nullability", `select c.relname || '.' || a.attname || ': ' ||
+    case when a.attnotnull then 'required' else 'nullable' end as fact from pg_attribute a
+    join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and c.relkind = 'r' and a.attnum > 0 and not a.attisdropped
+    and a.attname in ('created_by', 'actor_user_id', 'invited_by', 'accepted_by', 'owner_user_id', 'user_id')
+    order by 1`, [
+    "launch_checklist_items.created_by: nullable", "launch_checklist_template_items.created_by: nullable",
+    "launch_checklist_templates.created_by: nullable", "launch_checklists.created_by: nullable",
+    "launch_events.actor_user_id: nullable", "launches.created_by: nullable",
+    "memberships.user_id: required", "profiles.user_id: required",
+    "team_invitations.accepted_by: nullable", "team_invitations.invited_by: nullable",
+    "teams.owner_user_id: required", "username_reservations.user_id: required"]],
   // The partial unique index is the whole of the "at most one default" rule, so it is inventoried
   // rather than left to a procedural check inside the setter.
   ["launch index inventory", `select c.relname || ': ' || string_agg(i.relname || '/' ||
@@ -298,4 +330,43 @@ it("closes the launch surface through a forward revoke, leaving applied migratio
       'set_default_checklist_template') order by 1`)).toEqual([
     "apply_checklist_template=true", "create_launch=true", "restore_launch=true",
     "set_default_checklist_template=true", "transition_launch=true"]);
+});
+it("relaxes an author to null on deletion and cannot be rolled back once it has", async () => {
+  // The deletion slice's rollback is one-way, and this is the proof rather than the claim. The block
+  // deletes an account the pre-relaxation schema refused outright, shows the author reference going
+  // null instead of the row going away, then shows that re-tightening the column afterwards is
+  // impossible: a forward migration may close new deletion paths, but it never restores an author.
+  // As with every rollback proof here, the last statement always raises, so the whole thing is
+  // undone in the same statement and the schema is left exactly as the migrations built it.
+  await expect(sql(`do $$
+    declare keeper uuid := pg_catalog.gen_random_uuid(); author uuid := pg_catalog.gen_random_uuid();
+      team uuid; target uuid;
+    begin
+      insert into auth.users (id, email) values
+        (keeper, 'rollback-keeper@example.test'), (author, 'rollback-author@example.test');
+      insert into public.teams (owner_user_id, name) values (keeper, 'Rollback') returning id into team;
+      insert into public.launches (team_id, created_by, name) values (team, author, 'Rollback') returning id into target;
+      insert into public.launch_events (team_id, launch_id, kind, to_status, actor_user_id)
+      values (team, target, 'created', 'preparing', author);
+
+      delete from auth.users where id = author;
+      if not exists (select 1 from public.launch_events e where e.launch_id = target and e.actor_user_id is null) then
+        raise exception 'the relaxed actor reference did not survive as null';
+      end if;
+      if not exists (select 1 from public.launches l where l.id = target and l.created_by is null) then
+        raise exception 'the relaxed creator reference did not survive as null';
+      end if;
+      begin
+        alter table public.launch_events alter column actor_user_id set not null;
+        raise exception 'rollback re-tightened a reference that already holds a null author';
+      exception when not_null_violation then null;
+      end;
+      raise exception 'asymmetric rollback verified';
+    end $$;`)).rejects.toThrow("asymmetric rollback verified");
+
+  // The aborted block took the ghost account, its team and the attempted re-tightening with it.
+  expect(await facts(`select conname || '/' || confdeltype::text as fact from pg_constraint
+    where conrelid = 'public.launch_events'::regclass and contype = 'f' order by 1`)).toEqual([
+    "launch_events_actor_fkey/n", "launch_events_launch_fkey/c"]);
+  expect(await facts("select count(*)::text as fact from public.launch_events")).toEqual(["0"]);
 });
