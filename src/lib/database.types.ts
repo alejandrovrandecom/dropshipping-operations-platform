@@ -11,6 +11,7 @@ export type Database = {
     Tables: {
       account_deletion_requests: {
         Row: {
+          attempts: number
           id: string
           requested_at: string
           state: Database["public"]["Enums"]["account_deletion_state"]
@@ -18,6 +19,7 @@ export type Database = {
           user_id: string
         }
         Insert: {
+          attempts?: number
           id?: string
           requested_at?: string
           state?: Database["public"]["Enums"]["account_deletion_state"]
@@ -25,6 +27,7 @@ export type Database = {
           user_id: string
         }
         Update: {
+          attempts?: number
           id?: string
           requested_at?: string
           state?: Database["public"]["Enums"]["account_deletion_state"]
@@ -576,9 +579,17 @@ export type Database = {
         Args: { p_transfer_id: string }
         Returns: string
       }
+      account_deletion_status: {
+        Args: { p_user_id: string }
+        Returns: Database["public"]["Enums"]["account_deletion_state"]
+      }
       apply_checklist_template: {
         Args: { p_launch_id: string; p_template_id: string }
         Returns: string
+      }
+      claim_account_deletion: {
+        Args: { p_user_id: string }
+        Returns: Database["public"]["Enums"]["account_deletion_state"]
       }
       claim_username: { Args: { p_username: string }; Returns: string }
       create_invitation: {

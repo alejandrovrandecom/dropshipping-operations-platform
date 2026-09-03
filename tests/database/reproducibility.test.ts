@@ -24,7 +24,7 @@ const INVENTORY: Array<[string, string, string[]]> = [
     a.atttypmod), ', ' order by a.attname) as fact from pg_class c join pg_namespace n on n.oid = c.relnamespace
     join pg_attribute a on a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped
     where n.nspname = 'public' and c.relkind = 'r' group by c.relname order by 1`, [
-    "account_deletion_requests: id uuid, requested_at timestamp with time zone, state account_deletion_state, updated_at timestamp with time zone, user_id uuid",
+    "account_deletion_requests: attempts integer, id uuid, requested_at timestamp with time zone, state account_deletion_state, updated_at timestamp with time zone, user_id uuid",
     "account_deletion_team_selections: request_id uuid, team_id uuid",
     "launch_checklist_items: checklist_id uuid, created_at timestamp with time zone, created_by uuid, id uuid, is_complete boolean, is_required boolean, label text, position integer, team_id uuid",
     "launch_checklist_template_items: created_at timestamp with time zone, created_by uuid, id uuid, is_required boolean, label text, position integer, team_id uuid, template_id uuid",
@@ -99,7 +99,12 @@ const INVENTORY: Array<[string, string, string[]]> = [
     as fact from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' order by 1`, [
     'accept_invitation: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'accept_team_ownership_transfer: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
+    // The two privileged entry points, and the only `service_role` grants in the schema. Their
+    // absence of an `authenticated` grant is the assertion: the subject may ask for its own
+    // deletion, and no client role -- not even that subject -- may claim or observe it.
+    'account_deletion_status: secdef=true config=search_path="" acl=postgres=X/postgres, service_role=X/postgres',
     'apply_checklist_template: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
+    'claim_account_deletion: secdef=true config=search_path="" acl=postgres=X/postgres, service_role=X/postgres',
     'claim_username: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'create_invitation: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'create_launch: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
@@ -190,9 +195,13 @@ const INVENTORY: Array<[string, string, string[]]> = [
     case when a.attnotnull then 'required' else 'nullable' end as fact from pg_attribute a
     join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = 'public' and c.relkind = 'r' and a.attnum > 0 and not a.attisdropped
-    and a.attname in ('created_by', 'actor_user_id', 'invited_by', 'accepted_by', 'owner_user_id', 'user_id')
+    and a.attname in ('created_by', 'actor_user_id', 'invited_by', 'accepted_by', 'owner_user_id',
+      'user_id', 'attempts')
     order by 1`, [
-    "account_deletion_requests.user_id: required",
+    // The ledger column is `required` beside them because it is the counter a bound is read from: a
+    // nullable attempt count would make "how many runs has this had" unanswerable, and `not null`
+    // with a default is also what let it be added to a table that may already hold receipts.
+    "account_deletion_requests.attempts: required", "account_deletion_requests.user_id: required",
     "launch_checklist_items.created_by: nullable", "launch_checklist_template_items.created_by: nullable",
     "launch_checklist_templates.created_by: nullable", "launch_checklists.created_by: nullable",
     "launch_events.actor_user_id: nullable", "launches.created_by: nullable",
@@ -267,7 +276,7 @@ it("references every object in a definer body through a schema qualifier", async
   // relation target -- `from`, `join`, `insert into`, `update` -- while skipping `do update set`
   // and plpgsql's `returning ... into <variable>`, neither of which names a relation.
   const bodies = await facts("select prosrc as fact from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'");
-  expect(bodies).toHaveLength(20);
+  expect(bodies).toHaveLength(22);
   for (const body of bodies)
     for (const [, ref] of body.matchAll(/\b(?:from|join|insert\s+into|update)\s+(?!set\b)([a-z_][\w.]*)/gi)) expect(ref).toContain(".");
 });
@@ -379,6 +388,31 @@ it("closes the launch surface through a forward revoke, leaving applied migratio
       'set_default_checklist_template') order by 1`)).toEqual([
     "apply_checklist_template=true", "create_launch=true", "restore_launch=true",
     "set_default_checklist_template=true", "transition_launch=true"]);
+});
+it("closes the claim ledger through a forward revoke that never drops the receipt", async () => {
+  // Rollback for this slice is the revoke and nothing else: dropping `account_deletion_requests`
+  // would destroy the one record a finished deletion leaves behind, so the table is deliberately
+  // absent below, exactly as the registry is. As always, the last statement raises and undoes it.
+  await expect(sql(`do $$
+    begin
+      revoke execute on function public.account_deletion_status(uuid),
+        public.claim_account_deletion(uuid) from service_role;
+      if pg_catalog.has_function_privilege('service_role',
+        'public.claim_account_deletion(uuid)', 'execute') then
+        raise exception 'forward revoke left the claim open';
+      end if;
+      if pg_catalog.to_regclass('public.account_deletion_requests') is null then
+        raise exception 'rollback must never drop the receipt';
+      end if;
+      raise exception 'forward revoke verified';
+    end $$;`)).rejects.toThrow("forward revoke verified");
+
+  // The aborted block put both grants back, and the receipt was never at risk to begin with.
+  expect(await facts(`select p.proname::text || '=' ||
+    pg_catalog.has_function_privilege('service_role', p.oid, 'execute')::text as fact
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'
+    and p.proname in ('account_deletion_status', 'claim_account_deletion') order by 1`)).toEqual([
+    "account_deletion_status=true", "claim_account_deletion=true"]);
 });
 it("relaxes an author to null on deletion and cannot be rolled back once it has", async () => {
   // The deletion slice's rollback is one-way, and this is the proof rather than the claim. The block

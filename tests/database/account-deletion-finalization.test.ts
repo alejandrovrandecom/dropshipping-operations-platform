@@ -2,9 +2,10 @@
 // final deletion, which relax to null, and what the surviving rows look like afterwards. Every `it`
 // below is a scenario from `openspec/changes/account-deletion-lifecycle/specs/`.
 //
-// This slice ships the foreign key relaxation alone. Request, transfer and finalization state arrive
-// in later migrations, so deletion is driven here through privileged SQL -- which is precisely the
-// boundary under test: the referential contract, not the procedure that will one day call it.
+// The first three describes predate the claim ledger and drive deletion through privileged SQL:
+// their subject is the referential contract itself. The last one drives the claim, the way
+// `service_role` will -- through the database, never through `src/`, which holds no such key. The
+// finalizer that consumes a claim is the next slice; nothing here deletes an account.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { signIn, sql, uniqueEmail } from "../support/local-stack";
@@ -40,6 +41,20 @@ const authorship = async (team: string): Promise<string[]> => (await sql<{ fact:
     return `select '${table}=' || count(*) filter (where ${column} is null) || '/' || count(*) as fact
       from public.${table} where team_id = $1`; }).join(" union all ")} order by 1`,
   [team])).map((row) => row.fact);
+
+/** The two privileged entry points, driven as `service_role` will drive them; names are constants. */
+const privileged = async (rpc: string, userId: string): Promise<string | null> =>
+  (await sql<{ state: string | null }>(`select public.${rpc}($1) as state`, [userId]))[0].state;
+const status = (userId: string) => privileged("account_deletion_status", userId);
+const claim = (userId: string) => privileged("claim_account_deletion", userId);
+const requestDeletion = (actor: Actor) =>
+  actor.client.rpc("request_account_deletion", { p_delete_team_ids: [] });
+const attemptsOf = (userId: string): Promise<number> =>
+  rows("select attempts as n from public.account_deletion_requests where user_id = $1", [userId]);
+/** Writes the outcome the next slice's finalizer will write; this one ships no finalizer to write it. */
+const settle = (userId: string, state: string): Promise<unknown[]> =>
+  sql(`update public.account_deletion_requests set state = $2::public.account_deletion_state
+    where user_id = $1`, [userId, state]);
 
 /** Every invitation of a team, rendered as its participants plus the facts that must not move. */
 const invitations = async (team: string): Promise<string[]> => (await sql<{ fact: string }>(
@@ -153,5 +168,71 @@ describe("historical authoring references relax to null", () => {
     expect(await deleteAccount(author.userId)).toEqual({});
     expect(await rows("select count(*) as n from public.launches where id = $1 and created_by is null", [id])).toBe(1);
     expect((await retry(owner)).error?.code).toBe("42501"); // and is still refused against a null author
+  });
+});
+
+describe("the claim is the one admission point, and it is bounded", () => {
+  // Scenario: Finalization succeeds -- the observable half of it. The state is read back *after* the
+  // claim returns, so `in_progress` is a committed fact rather than a label one transaction passes.
+  it("commits in_progress on a pending receipt and counts that admission exactly once", async () => {
+    const subject = await signIn(uniqueEmail("claim-admit"));
+    expect((await requestDeletion(subject)).data).toBe("pending");
+    expect(await status(subject.userId)).toBe("pending");
+    // The ledger column is added to a table the previous slice already writes, and that slice's RPC
+    // names no such column: a receipt it creates still arrives at a safe, countable zero.
+    expect(await attemptsOf(subject.userId)).toBe(0);
+
+    expect(await claim(subject.userId)).toBe("in_progress");
+    expect(await status(subject.userId)).toBe("in_progress"); // the claim committed it
+    expect(await attemptsOf(subject.userId)).toBe(1);
+
+    // Triangulation: a run already in flight is not admitted a second time, so two finalizers racing
+    // for the same receipt cannot both count as executions.
+    expect(await claim(subject.userId)).toBe("in_progress");
+    expect(await attemptsOf(subject.userId)).toBe(1);
+
+    // And a completed request is reported back rather than reopened: deletion is definitive.
+    await settle(subject.userId, "done");
+    expect(await claim(subject.userId)).toBe("done");
+    expect(await attemptsOf(subject.userId)).toBe(1);
+  });
+
+  // Threat matrix: unbounded privileged retry. A `failed` receipt is re-claimable, which is what
+  // makes continuation possible and what would otherwise make it endless.
+  it("admits three executions of a receipt that keeps failing and refuses the fourth", async () => {
+    const subject = await signIn(uniqueEmail("claim-bound"));
+    expect((await requestDeletion(subject)).data).toBe("pending");
+
+    // One initial admission and two retries. Each is a committed claim followed by the failure the
+    // next slice's finalizer will record; seeded here, because this slice ships nothing that fails.
+    for (const counted of [1, 2, 3]) {
+      expect(await claim(subject.userId)).toBe("in_progress");
+      expect(await attemptsOf(subject.userId)).toBe(counted);
+      await settle(subject.userId, "failed");
+    }
+
+    // The fourth is refused, and refused silently: it admits no run, moves no state, and answers
+    // exactly what a plain status read already answers, so the exhaustion is not a new disclosure.
+    expect(await claim(subject.userId)).toBe("failed");
+    expect(await status(subject.userId)).toBe("failed");
+    expect(await attemptsOf(subject.userId)).toBe(3);
+
+    // Frozen rather than finished, and unfinalizable in the strongest sense available here: the
+    // receipt never reaches `in_progress` again, and this schema holds no finalizer at all. The
+    // next slice adds one that refuses anything but `in_progress`; the bound stands without it.
+    expect(await rows(`select count(*) as n from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname like 'finalize%'`, [])).toBe(0);
+  });
+
+  // Triangulation on the answer itself: the claim never invents one. An account that never asked
+  // gets the same null a status read gives, so no caller learns a request exists from the claim.
+  it("answers an unknown subject with the null a status read gives", async () => {
+    const stranger = randomUUID();
+    const subject = await signIn(uniqueEmail("claim-stranger"));
+    expect((await requestDeletion(subject)).data).toBe("pending");
+
+    expect(await status(stranger)).toBeNull();
+    expect(await claim(stranger)).toBeNull(); // and the same call against a real receipt admits it
+    expect(await claim(subject.userId)).toBe("in_progress");
   });
 });
