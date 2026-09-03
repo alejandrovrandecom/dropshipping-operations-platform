@@ -60,6 +60,24 @@ const profiles = (userId: string): Promise<number> =>
   rows("select count(*) as n from public.profiles where user_id = $1", [userId]);
 const teamCount = (teamId: string): Promise<number> =>
   rows("select count(*) as n from public.teams where id = $1", [teamId]);
+/** The receipt carries no foreign key, so a synthetic one needs no auth row and a hundred cost one
+ *  statement. `age` is a Postgres interval literal, so a fixture can sit an hour either side of the
+ *  retention boundary; it is written to both timestamps. */
+const seedReceipts = (count: number, state: string, age: string): Promise<unknown[]> =>
+  sql(`insert into public.account_deletion_requests (user_id, state, requested_at, updated_at)
+    select pg_catalog.gen_random_uuid(), $2::public.account_deletion_state,
+      pg_catalog.now() - $3::interval, pg_catalog.now() - $3::interval
+    from pg_catalog.generate_series(1, $1)`, [count, state, age]);
+/** Terminal and past the 30-day retention: exactly what a sweep may take. */
+const eligible = (): Promise<number> =>
+  rows(`select count(*) as n from public.account_deletion_requests where state in ('done', 'failed')
+    and updated_at < pg_catalog.now() - interval '30 days'`, []);
+/** Terminal but inside the window, 29 to 30 days old: exactly what a sweep must never take. */
+const justWithin = (): Promise<number> =>
+  rows(`select count(*) as n from public.account_deletion_requests where state = 'done' and updated_at
+    between pg_catalog.now() - interval '30 days' and pg_catalog.now() - interval '29 days'`, []);
+const receiptOf = (userId: string): Promise<number> =>
+  rows("select count(*) as n from public.account_deletion_requests where user_id = $1", [userId]);
 const attemptsOf = (userId: string): Promise<number> =>
   rows("select attempts as n from public.account_deletion_requests where user_id = $1", [userId]);
 /** Writes the outcome the next slice's finalizer will write; this one ships no finalizer to write it. */
@@ -402,6 +420,72 @@ describe("finalization is the run itself, and it leaves only a username behind",
     expect(await invitations(hosted)).toEqual([
       `${strangerEmail}: by=${host.userId} accepted_by=null accepted=false hashed=true`]);
     expect(await profiles(subject.userId)).toBe(0);
+  });
+
+  // Scenario: Receipt is privacy-safe and lazily purged. Retention is a trigger on the receipt,
+  // fired by the only statement that writes a terminal state -- the finalizer's outcome write.
+  // Terminal-only and age-bounded, so a live request and a fresh receipt are both untouched, and
+  // capped, so one firing never turns an unbounded delete loose inside a finalizing transaction.
+  it("purges only terminal receipts past the 30-day boundary, in bounded batches, never on a claim", async () => {
+    // Fixtures sit an hour either side of the specified window. An hour dwarfs any plausible
+    // execution drift and is far smaller than a day, so the pair pins the constant at exactly 30:
+    // a 29-day constant would take the retained one, a 31-day constant would leave the eligible ones.
+    await seedReceipts(120, "done", "30 days 1 hour"); // terminal, just past the boundary
+    await seedReceipts(1, "done", "29 days 23 hours"); // terminal, just inside it
+    await seedReceipts(1, "pending", "30 days 1 hour"); // past it, but never terminal
+    expect(await eligible()).toBe(120);
+    expect(await justWithin()).toBe(1);
+
+    const subject = await signIn(uniqueEmail("sweep-subject"));
+    expect((await requestDeletion(subject)).data).toBe("pending");
+    // The claim writes `in_progress`, which the trigger's WHEN clause excludes: no sweep yet.
+    expect(await claim(subject.userId)).toBe("in_progress");
+    expect(await eligible()).toBe(120);
+
+    // The outcome write is terminal, so this fires it -- once, and capped at a hundred.
+    expect(await finalize(subject.userId)).toBe("done");
+    expect(await eligible()).toBe(20);
+    // A later firing drains the rest: best-effort, with no timing guarantee of its own.
+    await settle(subject.userId, "failed");
+    expect(await eligible()).toBe(0);
+
+    // Neither survivor was eligible, and each for its own reason: one sits an hour inside the
+    // window, the other is past it but has never reached a terminal state.
+    expect(await justWithin()).toBe(1);
+    expect(await rows("select count(*) as n from public.account_deletion_requests where state = 'pending'",
+      [])).toBe(1);
+  });
+
+  // Threat matrix: cleanup aborting a MUST. Purging is the only MAY in this contract, so a sweep
+  // that fails must be swallowed where it happens and must never cost the run its outcome.
+  it("completes finalization when the sweep itself fails, and purges once the fault is gone", async () => {
+    const doomed = randomUUID();
+    await sql(`insert into public.account_deletion_requests (user_id, state, requested_at, updated_at)
+      values ($1, 'done', pg_catalog.now() - interval '40 days', pg_catalog.now() - interval '40 days')`,
+    [doomed]);
+    const subject = await signIn(uniqueEmail("sweep-fault"));
+    const condemned = await startTeam(subject, "Condemned");
+    expect((await requestDeletion(subject, [condemned])).data).toBe("pending");
+
+    await sql(`create function public.halt_sweep() returns trigger language plpgsql
+      as $fn$ begin raise exception 'injected cleanup failure'; end $fn$`);
+    await sql(`create trigger halt_sweep before delete on public.account_deletion_requests
+      for each row when (old.user_id = '${doomed}') execute function public.halt_sweep()`);
+    try {
+      // The MUSTs still land: the run reaches `done` and the identity is gone, even though the
+      // cleanup its outcome write triggered raised and took the whole batch down with it.
+      expect(await claim(subject.userId)).toBe("in_progress");
+      expect(await finalize(subject.userId)).toBe("done");
+      expect(await profiles(subject.userId)).toBe(0);
+      expect(await receiptOf(doomed)).toBe(1); // the failed sweep left it exactly where it was
+    } finally {
+      await sql("drop trigger halt_sweep on public.account_deletion_requests");
+      await sql("drop function public.halt_sweep()");
+    }
+
+    // And the mechanism was real, not absent: with the fault gone the next terminal write takes it.
+    await settle(subject.userId, "failed");
+    expect(await receiptOf(doomed)).toBe(0);
   });
 
   // Scenario: No invocation occurs -- and the design's "No scheduler is not no purge". A receipt
