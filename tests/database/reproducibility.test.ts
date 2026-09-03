@@ -33,6 +33,7 @@ const INVENTORY: Array<[string, string, string[]]> = [
     "memberships: created_at timestamp with time zone, id uuid, team_id uuid, user_id uuid",
     "profiles: created_at timestamp with time zone, display_name text, email text, user_id uuid",
     "team_invitations: accepted_at timestamp with time zone, accepted_by uuid, created_at timestamp with time zone, email text, expires_at timestamp with time zone, id uuid, invited_by uuid, team_id uuid, token_hash text",
+    "team_ownership_transfers: accepted_at timestamp with time zone, created_at timestamp with time zone, expires_at timestamp with time zone, from_user_id uuid, id uuid, team_id uuid, to_user_id uuid",
     "teams: created_at timestamp with time zone, id uuid, name text, owner_user_id uuid",
     "username_reservations: claimed_at timestamp with time zone, user_id uuid, username text"]],
   ["row level security, enabled and forced", `select relname || ': rls=' || relrowsecurity || ' forced='
@@ -40,8 +41,11 @@ const INVENTORY: Array<[string, string, string[]]> = [
     "launch_checklist_items: rls=true forced=true", "launch_checklist_template_items: rls=true forced=true",
     "launch_checklist_templates: rls=true forced=true", "launch_checklists: rls=true forced=true",
     "launch_events: rls=true forced=true", "launches: rls=true forced=true", "memberships: rls=true forced=true",
-    "profiles: rls=true forced=true", "team_invitations: rls=true forced=true", "teams: rls=true forced=true",
+    "profiles: rls=true forced=true", "team_invitations: rls=true forced=true",
+    "team_ownership_transfers: rls=true forced=true", "teams: rls=true forced=true",
     "username_reservations: rls=true forced=true"]],
+  // `team_ownership_transfers` is absent on purpose, and its absence is the assertion: with security
+  // forced and no permissive policy, adding one would appear here and fail this list.
   ["policy inventory", `select tablename || ': ' || string_agg(policyname || '/' || cmd || '/' ||
     array_to_string(roles, '+'), ', ' order by policyname) as fact from pg_policies
     where schemaname = 'public' group by tablename order by 1`, [
@@ -65,7 +69,10 @@ const INVENTORY: Array<[string, string, string[]]> = [
     "launches: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres, authenticated=r/postgres",
     "memberships: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres, authenticated=rd/postgres",
     "profiles: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres, authenticated=r/postgres",
-    "team_invitations: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres, authenticated=rd/postgres", "teams: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres, authenticated=rd/postgres",
+    "team_invitations: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres, authenticated=rd/postgres",
+    // Joins the registry in holding no client privilege at all: the two RPCs are the only doors.
+    "team_ownership_transfers: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres",
+    "teams: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres, authenticated=rd/postgres",
     // The registry is the one table with no client privilege at all: no `select`, so no read and no
     // enumeration; no write, so the claim RPC is the only door and the reservation is immutable.
     "username_reservations: postgres=arwdDxtm/postgres, service_role=Dxtm/postgres"]],
@@ -84,6 +91,7 @@ const INVENTORY: Array<[string, string, string[]]> = [
     || coalesce(array_to_string(p.proconfig, ','), 'NONE') || ' acl=' || coalesce(array_to_string(p.proacl, ', '), 'DEFAULT')
     as fact from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' order by 1`, [
     'accept_invitation: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
+    'accept_team_ownership_transfer: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'apply_checklist_template: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'claim_username: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'create_invitation: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
@@ -98,6 +106,7 @@ const INVENTORY: Array<[string, string, string[]]> = [
     'hash_invitation_token: secdef=false config=search_path="" acl=postgres=X/postgres',
     'is_team_member: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'is_team_owner: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
+    'request_team_ownership_transfer: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'resolve_team_usernames: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'restore_launch: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'set_default_checklist_template: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
@@ -139,6 +148,19 @@ const INVENTORY: Array<[string, string, string[]]> = [
     "profiles: profiles_pkey/p, profiles_user_id_fkey/f/c",
     "team_invitations: team_invitations_accepted_by_fkey/f/n, team_invitations_invited_by_fkey/f/n, team_invitations_pkey/p, team_invitations_team_id_fkey/f/c, team_invitations_token_hash_key/u",
     "teams: teams_name_check/c, teams_owner_user_id_fkey/f/r, teams_pkey/p"]],
+  // An offer is live working state, so it cascades off its team and off either participant, and the
+  // check is what stops an owner offering a team to themselves. "At most one live offer per team" is
+  // the whole of the supersede rule and lives in an index, so it is inventoried where it actually is.
+  ["transfer constraint and index inventory", `select 'constraints: ' || string_agg(con.conname || '/' ||
+    con.contype::text || case when con.contype = 'f' then '/' || con.confdeltype::text else '' end, ', '
+    order by con.conname) as fact from pg_constraint con
+    where con.conrelid = 'public.team_ownership_transfers'::regclass
+    union all select 'indexes: ' || string_agg(i.relname || '/' || case when x.indisunique then 'unique'
+    else 'plain' end || case when x.indpred is not null then '/partial' else '' end, ', ' order by i.relname)
+    from pg_index x join pg_class i on i.oid = x.indexrelid
+    where x.indrelid = 'public.team_ownership_transfers'::regclass`, [
+    "constraints: team_ownership_transfers_from_user_id_fkey/f/c, team_ownership_transfers_pkey/p, team_ownership_transfers_recipient_check/c, team_ownership_transfers_team_id_fkey/f/c, team_ownership_transfers_to_user_id_fkey/f/c",
+    "indexes: team_ownership_transfers_pending_idx/unique/partial, team_ownership_transfers_pkey/unique"]],
   // `set null` is only half a relaxed reference: on a required column the referential action would
   // raise a fresh violation and refuse the deletion again, so nullability is inventoried beside the
   // actions. The four columns that stay `required` are as much of the contract as the eight that do
@@ -182,7 +204,7 @@ const INVENTORY: Array<[string, string, string[]]> = [
     join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = 'public' and c.relname = 'username_reservations' order by 1`, [
     "username_reservations_pkey/unique", "username_reservations_user_id_key/unique"]],
-  // The gate is ten statement-level triggers and nothing else, so this is the whole of it. The
+  // The gate is eleven statement-level triggers and nothing else, so this is the whole of it. The
   // definitions are compared verbatim: a trigger dropped, narrowed to a row, moved to `after`,
   // pointed at another function, or widened past `display_name` on `profiles` fails right here.
   // `teams` insert and delete are gated twice over -- once directly, and once through the
@@ -200,6 +222,7 @@ const INVENTORY: Array<[string, string, string[]]> = [
     "CREATE TRIGGER memberships_require_username BEFORE INSERT OR DELETE ON public.memberships FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
     "CREATE TRIGGER profiles_require_username BEFORE UPDATE OF display_name ON public.profiles FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
     "CREATE TRIGGER team_invitations_require_username BEFORE INSERT OR DELETE OR UPDATE ON public.team_invitations FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
+    "CREATE TRIGGER team_ownership_transfers_require_username BEFORE INSERT OR DELETE OR UPDATE ON public.team_ownership_transfers FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()",
     "CREATE TRIGGER teams_ensure_owner_membership AFTER INSERT ON public.teams FOR EACH ROW EXECUTE FUNCTION ensure_owner_membership()",
     "CREATE TRIGGER teams_require_username BEFORE INSERT OR DELETE OR UPDATE ON public.teams FOR EACH STATEMENT EXECUTE FUNCTION enforce_username_claim()"]],
 ];
@@ -221,7 +244,7 @@ it("references every object in a definer body through a schema qualifier", async
   // relation target -- `from`, `join`, `insert into`, `update` -- while skipping `do update set`
   // and plpgsql's `returning ... into <variable>`, neither of which names a relation.
   const bodies = await facts("select prosrc as fact from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'");
-  expect(bodies).toHaveLength(17);
+  expect(bodies).toHaveLength(19);
   for (const body of bodies)
     for (const [, ref] of body.matchAll(/\b(?:from|join|insert\s+into|update)\s+(?!set\b)([a-z_][\w.]*)/gi)) expect(ref).toContain(".");
 });
@@ -291,7 +314,7 @@ it("reopens the gate through a symmetric rollback that leaves the registry stand
     end $$;`)).rejects.toThrow("symmetric rollback verified");
 
   // The aborted block put all ten triggers back, and the resolver grant with them.
-  expect(await facts("select count(*)::text as fact from pg_trigger where tgname like '%require_username'")).toEqual(["10"]);
+  expect(await facts("select count(*)::text as fact from pg_trigger where tgname like '%require_username'")).toEqual(["11"]);
   expect(await facts(`select pg_catalog.has_function_privilege('authenticated',
     'public.resolve_team_usernames(uuid)', 'execute')::text as fact`)).toEqual(["true"]);
 });
