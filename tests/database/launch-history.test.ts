@@ -39,7 +39,8 @@ async function template(team: string, name: string, labels: string[], actor: Act
 type EventRow = {
   seq: string; kind: string; from_status: string | null; to_status: string | null;
   // `pg` decodes timestamptz into a Date instance, so compare these by value, never by identity.
-  launch_id: string; team_id: string; actor_user_id: string; created_at: Date;
+  // `actor_user_id` is nullable: a finally deleted account leaves the event and loses only its name.
+  launch_id: string; team_id: string; actor_user_id: string | null; created_at: Date;
 };
 const events = async (target: string): Promise<EventRow[]> => sql<EventRow>(
   `select seq, kind, from_status, to_status, launch_id, team_id, actor_user_id, created_at
@@ -162,6 +163,49 @@ describe("events expose minimum behavioral facts", () => {
     expect(Date.parse(rows[1].created_at as string)).toBeGreaterThan(0);
     // The creation event names the same launch and the same initiator, so the fields are per-event.
     expect(rows[0]).toMatchObject({ kind: "created", from_status: null, to_status: "preparing", actor_user_id: member.userId });
+  });
+
+  // Scenario: Deleted initiator preserves history
+  it("keeps every other fact and the append order when the initiator is finally deleted", async () => {
+    const leaver = await signIn(uniqueEmail("hist-leaver"));
+    await sql("insert into public.memberships (team_id, user_id) values ($1, $2)", [teamId, leaver.userId]);
+    const id = await launch(teamId, "Authored by a leaver", leaver);
+    expect((await transition(leaver, id, "discarded")).error).toBeNull();
+    expect((await transition(leaver, id, "preparing")).error).toBeNull();
+    const before = await events(id);
+    expect(before.map((e) => e.actor_user_id)).toEqual([leaver.userId, leaver.userId, leaver.userId]);
+
+    await sql("delete from auth.users where id = $1", [leaver.userId]);
+
+    const after = await events(id);
+    expect(after.map((e) => e.actor_user_id)).toEqual([null, null, null]);
+    // Initiator aside, the rows are what they were: kind, states, launch, team, sequence and instant.
+    const withoutInitiator = (rows: typeof before) => rows.map(({ actor_user_id: _cleared, ...rest }) => rest);
+    expect(withoutInitiator(after)).toEqual(withoutInitiator(before));
+    expect(await history(id)).toEqual(["created:->preparing",
+      "transitioned:preparing>discarded", "transitioned:discarded>preparing"]);
+
+    // An authorized current member still reads the whole history, in the same append order.
+    const read = await owner.client.from("launch_events").select("seq, kind, actor_user_id").eq("launch_id", id).order("seq");
+    expect(read.error).toBeNull();
+    expect(read.data!.map((e) => e.actor_user_id)).toEqual([null, null, null]);
+    expect(read.data!.map((e) => Number(e.seq))).toEqual(before.map((e) => Number(e.seq)));
+  });
+
+  // Scenario: Deleted initiator remains tenant-isolated
+  it("discloses no null-initiator event fact to an outside-team caller", async () => {
+    const leaver = await signIn(uniqueEmail("hist-hidden-leaver"));
+    await sql("insert into public.memberships (team_id, user_id) values ($1, $2)", [teamId, leaver.userId]);
+    const id = await launch(teamId, "Hidden after deletion", leaver);
+    await sql("delete from auth.users where id = $1", [leaver.userId]);
+    expect((await events(id)).map((e) => e.actor_user_id)).toEqual([null]);
+
+    expect((await outsider.client.from("launch_events").select("seq, actor_user_id").eq("launch_id", id)).data ?? []).toEqual([]);
+    expect((await outsider.client.from("launch_events").select("seq").eq("team_id", teamId)).data ?? []).toEqual([]);
+    expect((await outsider.client.from("launches").select("id, created_by").eq("id", id)).data ?? []).toEqual([]);
+    // The outsider still reads their own team, so the emptiness above is isolation, not a broken read.
+    const own = await launch(outsiderTeamId, "Outsider still reads", outsider);
+    expect((await outsider.client.from("launch_events").select("seq").eq("launch_id", own)).data ?? []).toHaveLength(1);
   });
 
   // Scenario: Equal-time order
