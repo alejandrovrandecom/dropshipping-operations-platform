@@ -3,7 +3,8 @@
 The database is defined only by `supabase/migrations/` and `supabase/config.toml`.
 This document must be updated in the same pull request as any migration.
 
-**Status**: identity and launch-workspace slices landed. Later slices extend the tables below.
+**Status**: identity, launch-workspace and username-reservation slices landed. Later
+slices extend the tables below.
 
 ## Quick path
 
@@ -27,7 +28,14 @@ erDiagram
   launch_checklist_templates |o--o{ launch_checklists : "copied into once"
   launch_checklists ||--o{ launch_checklist_items : contains
   launches ||--o{ launch_events : "appends history"
+  username_reservations {
+    text username PK
+    uuid user_id UK
+  }
 ```
+
+`username_reservations` is drawn unconnected on purpose: it carries no foreign key,
+so it is the one table that outlives the account it describes.
 
 ## Ownership and tenant keys
 
@@ -51,6 +59,7 @@ erDiagram
 | `launch_checklists` | Team-owned | The one editable snapshot copied into a launch. Exposes `(team_id, id)`. | `20260829170000_launch_workspace_core` |
 | `launch_checklist_items` | Team-owned | Independently editable snapshot items. | `20260829170000_launch_workspace_core` |
 | `launch_events` | Team-owned | Append-only launch history keyed by a monotonic `seq`. | `20260829170000_launch_workspace_core` |
+| `username_reservations` | Global | One permanent, globally unique username per account. Carries **no** foreign key, so it survives account deletion. | `20260901120000_username_reservation` |
 
 ### Launch statuses
 
@@ -79,6 +88,8 @@ Applied migrations are immutable. Corrections ship as new forward migrations.
 | `20260828210000_team_invitations` | `team_invitations`, forced RLS, owner-only read/delete policies, and the hash, issue and accept functions | Drop the table and its three functions; memberships already granted stay valid. |
 | `20260829120000_profile_email_sync` | `handle_user_email_change()` and the `auth.users` email trigger that mirrors a confirmed address into `profiles.email` | Ship a forward migration dropping **only** the trigger and the function. No table, column, policy, grant or profile value changes, and there is no session state to unwind. |
 | `20260829170000_launch_workspace_core` | Two enums, six team-owned launch tables, forced RLS with member policies, column grants, and the five launch RPCs | Ship a forward migration that **revokes** the six table grants and the five `execute` privileges, closing the surface while retaining every row. Never edit the applied file and never drop the tables: launches, snapshots and history are user data, and `trash` already covers recoverable removal. |
+| `20260901120000_username_reservation` | `username_reservations` with forced RLS, no policy, no grant and no foreign key, plus the atomic `claim_username(text)` RPC | **Deliberately asymmetric.** Ship a forward migration that revokes `execute` on `claim_username(text)`; that closes the claim surface. Never drop the table — a reservation must outlive the account that made it, which is the entire point of a permanent name. |
+| `20260901130000_username_gate` | `has_username()`, `enforce_username_claim()`, ten statement-level gate triggers, and the team-scoped `resolve_team_usernames(uuid)` RPC | **Fully symmetric.** Ship a forward migration that drops the ten triggers and revokes `execute` on `resolve_team_usernames(uuid)`; the schema is then exactly what it was before the gate. It must leave the registry from the previous migration standing. |
 
 ## RLS and grant matrix
 
@@ -96,6 +107,7 @@ Every exposed team-owned table enables row level security before any grant.
 | `launch_checklists` | enabled + forced | read: `is_team_member(team_id)`; no insert or update policy — snapshots are RPC-only | `select` |
 | `launch_checklist_items` | enabled + forced | read and update: `is_team_member(team_id)`; no insert policy — items arrive by copy | `select`, `update (label, is_required, position, is_complete)` |
 | `launch_events` | enabled + forced | read: `is_team_member(team_id)`; no insert or update policy — history is append-only via RPC | `select` |
+| `username_reservations` | enabled + forced | none — no policy of any kind exists, so every direct read, write and enumeration is denied by default | none — `claim_username` is the only door |
 
 No launch table grants `delete` to anyone, so there is no individual purge path.
 `launches.status`, `launches.prior_status` and
@@ -122,6 +134,10 @@ Supabase's default blanket grant before issuing the explicit grants above.
 | `restore_launch(uuid)` | `security definer` RPC | `''` | `authenticated` |
 | `apply_checklist_template(uuid, uuid)` | `security definer` RPC | `''` | `authenticated` |
 | `set_default_checklist_template(uuid, uuid)` | `security definer` RPC | `''` | `authenticated` |
+| `claim_username(text)` | `security definer` RPC, atomic one-time claim | `''` | `authenticated` |
+| `has_username()` | `security definer` predicate | `''` | nobody — the gate's own question |
+| `enforce_username_claim()` | `security definer` statement trigger on ten tables | `''` | nobody — trigger only |
+| `resolve_team_usernames(uuid)` | `security definer` RPC, team-scoped | `''` | `authenticated` |
 
 The helpers are `security definer` on purpose: the `memberships` read policy calls
 `is_team_member`, which reads `memberships`. Definer rights break that recursion.
@@ -165,3 +181,66 @@ each function taking a prefix of it, so concurrent callers cannot deadlock.
 
 `42501` is deliberately opaque. An absent id and another tenant's id answer
 identically, so no RPC can be used as an existence oracle for another team.
+
+## Username reservation and the onboarding gate
+
+Two migrations, deliberately split: `20260901120000_username_reservation` is the
+registry and the claim, and `20260901130000_username_gate` is the rule that gives
+them force. Nothing in the first depends on the second.
+
+A username is `[a-z0-9_]{3,30}`, lowercased and trimmed by the database, claimed
+exactly once per account, and permanent. `claim_username` is a single
+`insert ... on conflict do nothing`, so one unique constraint covers "the name is
+taken" and the other covers "you already hold one" — two concurrent claimants
+cannot both win, and no branch can observe which case it hit.
+
+### Why triggers carry the gate
+
+Every protected write already travels through a `SECURITY DEFINER` RPC owned by
+`postgres`, and `postgres` holds `BYPASSRLS`, so a **policy would never run** on
+those paths. Rewriting the RPC bodies would reach them but leaks a bypass every
+time an RPC is added; widening `is_team_member` would break reads and resolution.
+A `BEFORE ... FOR EACH STATEMENT` trigger sits below all of it.
+
+Statement level, not row level: the gate asks one question about the *caller*,
+never about a row. Per-row evaluation would only multiply the cost, and a
+statement matching nothing must still be refused — that is what "denied without
+side effects" has to mean.
+
+The gate no-ops when `auth.uid()` is null. `postgres` and `service_role` bypass
+RLS anyway, `anon` holds no privilege on these tables, and an unconditional raise
+would break `handle_new_user`, which mirrors a new account before any claim could
+exist. `profiles` is gated on `update of display_name` only, so the confirmed-email
+mirror keeps working untouched.
+
+`teams` insert and delete are gated twice over, because `ensure_owner_membership`
+and the delete cascade each perform a gated `memberships` write. That redundancy
+is kept as the cheapest available depth.
+
+### Resolution
+
+`resolve_team_usernames(team_id)` joins `memberships` to the registry and checks
+`is_team_member(p_team_id)` **inside** the query. A caller outside the team gets
+an empty set — identical to a team holding no claims and to a team that does not
+exist. No refusal, no error, no difference, so it cannot be worked into an
+existence oracle. It reports claims, not the roster.
+
+| SQLSTATE | Meaning |
+|---|---|
+| `22023` | Invalid format (the one distinguishable rejection, since a caller can compute it), or a refused claim — name taken and already-claimed read identically |
+| `42501` | The gate: a confirmed account without a claim attempted any other protected write |
+
+### Typed access
+
+`src/modules/identity/{types,repository,service}.ts` wraps the two granted RPCs.
+`repository.ts` is the only file that reaches the database; `service.ts` exposes
+`claimUsername` and `resolveTeamUsernames` as use cases and never calls
+`.from(` or `.rpc(` itself. Domain types are projected from
+`Database["public"]["Functions"]`, so the resolver's row shape follows the schema
+rather than restating it. `tests/database/identity-module.test.ts` pins all of it.
+
+### Handoff
+
+`account-deletion-lifecycle` depends on `20260901120000_username_reservation`
+alone. The registry is the durable attribution, so that change **must not** add a
+foreign key to `user_id` and **must not** delete reservation rows.

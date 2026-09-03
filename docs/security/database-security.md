@@ -3,7 +3,7 @@
 Tenant isolation is enforced in the database, not in application code. Row level
 security plus composite foreign keys are the wall; the client is never trusted.
 
-**Status**: identity and launch-workspace slices enforced. Table-by-table policy
+**Status**: identity, launch-workspace and username-reservation slices enforced. Table-by-table policy
 and grant inventories live in `docs/database/architecture.md` and are updated
 with every migration.
 
@@ -32,6 +32,12 @@ with every migration.
 | Attempt to purge one launch, snapshot or event | Refused: no launch table grants `delete` to anyone. |
 | Cross-team template application | Refused with `22023`; the launch stays snapshot-free. |
 | Retried launch creation after a lost response | Answered with the caller's own launch: the caller-supplied id is the idempotency key, so no duplicate launch and no second `created` event appear. A retry naming another team's or another member's id is refused with the same opaque `42501`. |
+| Claim of a taken username, or a second claim by an account that already holds one | Both refused with one identical `22023` message. Availability and account state are protected facts; only the format rule — which the caller can compute unaided — gets a distinct message. |
+| Concurrent claims of the same username | Exactly one winner. A single `insert ... on conflict do nothing` decides it, so no branch can observe, or leak, which constraint refused the loser. |
+| Any protected write by a confirmed account holding no claim | Denied with `42501` and no side effects, on all ten gated tables. The claim itself is the only door the gate leaves open. |
+| Direct read, write or enumeration of `username_reservations` | Refused at the privilege layer: forced RLS, no policy, and no grant of any kind to any client role. |
+| Resolution of a user outside the caller's teams | Answered with an empty set, identically to a team with no claims and to a team that does not exist — never a refusal, so it is no existence oracle. |
+| Account or profile deletion | The reservation survives, and it holds no email or profile data — only the name, the subject id and the claim instant. |
 
 ## Key handling
 
@@ -131,11 +137,30 @@ answer for an unknown id and another team's id across all five RPCs.
 denials protect, including that whole-team deletion is the only destructive path and that a
 non-owner's attempt leaves every launch, template, snapshot and event in place.
 
+`tests/identity/username-reservation.test.ts` proves the registry contract: format and
+normalization, one claim per account, the concurrent winner, the identical refusal for a taken name
+and a repeat claim, survival of account deletion with no PII retained, and denial of every direct
+registry read. `tests/isolation/username-gate.test.ts` proves the gate across all ten gated tables
+and twenty-one operations — each denial asserted as `42501` **and** the gate's own message, so an
+RLS or grant refusal carrying the same code can never be mistaken for a gate hit — plus the
+refused → claim → allowed sequence, the null-`auth.uid()` no-op, and both resolver scopes.
+`tests/database/identity-module.test.ts` pins the typed wrappers and the module's layering.
+
 **Rollback is forward-only here.** Closing the launch surface means shipping a *new* migration that
 revokes the six table grants and the five `execute` privileges — never editing the applied file and
 never dropping the tables, which hold user data. `tests/database/reproducibility.test.ts` executes
 that exact revoke inside a block that always aborts, so the rollback path is proven and undone in
 the same statement.
+
+The same file proves both username rollbacks the same way. The gate's is **symmetric** — drop the
+ten triggers, revoke the resolver, and the schema is exactly pre-gate. The registry's is
+**deliberately not**: it revokes `execute` on `claim_username(text)` and leaves the table standing,
+because a permanent name must outlive the account that claimed it. Both assertions fail if the
+rollback path removes the registry.
+
+**Gotcha.** `has_username()` is granted to nobody. It is the gate's own question, and an exposed
+predicate would be exactly the reservation-status oracle that the closed registry exists to prevent.
+The typed API covers only `claimUsername` and `resolveTeamUsernames`.
 
 **Gotcha.** `insert ... returning` evaluates the `select` policy before
 after-insert triggers run. A read policy that depends on a row written by such a
