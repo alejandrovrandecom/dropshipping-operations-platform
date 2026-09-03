@@ -1,7 +1,9 @@
 // Identity use cases. Callers depend on the service, the service depends on the
 // repository port, and only the repository is allowed to touch the database.
 import { createIdentityRepository, type IdentityClient } from "./repository";
-import type { Membership, Team, TeamUsername, Username } from "./types";
+import type {
+  AccountDeletionState, Membership, Team, TeamUsername, TransferId, TransferredTeamId, Username,
+} from "./types";
 
 export type IdentityRepository = ReturnType<typeof createIdentityRepository>;
 export const createIdentityService = (repository: IdentityRepository) => ({
@@ -14,5 +16,17 @@ export const createIdentityService = (repository: IdentityRepository) => ({
   claimUsername: (username: string): Promise<Username> => repository.claimUsername(username),
   /** The claimed names of a team the caller shares; anyone else reads an empty list. */
   resolveTeamUsernames: (teamId: string): Promise<TeamUsername[]> => repository.resolveTeamUsernames(teamId),
+  /** Offers a team the caller owns to one of its current members, who must accept before it moves. */
+  offerTeam: (teamId: string, toUserId: string): Promise<TransferId> =>
+    repository.requestTeamOwnershipTransfer(teamId, toUserId),
+  /** Takes an offer addressed to the caller, returning the team that moved. */
+  acceptTeam: (transferId: string): Promise<TransferredTeamId> => repository.acceptTeamOwnershipTransfer(transferId),
+  /**
+   * Schedules the caller's own definitive deletion. It is admitted only once every owned team is
+   * handed over or named here, and there is no cancellation: finalization is privileged and
+   * deliberately absent from this module.
+   */
+  requestAccountDeletion: (deleteTeamIds: string[] = []): Promise<AccountDeletionState> =>
+    repository.requestAccountDeletion(deleteTeamIds),
 });
 export const identityServiceFor = (client: IdentityClient) => createIdentityService(createIdentityRepository(client));

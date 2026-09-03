@@ -64,6 +64,30 @@ the account that made it, so dropping the registry would release names that were
 promised to be permanent. Withdraw the gate first if both are being withdrawn:
 the gate depends on the registry, never the reverse.
 
+### Account deletion
+
+Finalization is privileged and on demand: nothing in this schema schedules it. An
+operator holding `service_role` runs the pair, and a retry is the same pair again.
+
+```sql
+select public.claim_account_deletion('<user-uuid>');    -- pending|failed -> in_progress
+select public.finalize_account_deletion('<user-uuid>'); -- done | failed
+select public.account_deletion_status('<user-uuid>');   -- observe without acting
+```
+
+| Situation | What to do |
+|---|---|
+| `finalize` answered `failed` | Claim again and re-run. Completed steps stand; only unfinished work continues. |
+| `claim` answered `failed` without moving | The three executions are spent. The receipt is frozen and no further run is admitted. |
+| `finalize` raised `22023` | The receipt is not `in_progress`. Claim first — the observable state cannot be skipped. |
+| A `23503` on `teams_owner_user_id_fkey` | The subject still owns a live team it never resolved. It must be handed over or condemned by a new request. |
+
+Withdraw the surface by revoking `execute` on the three `service_role` functions;
+that closes finalization while retaining every receipt. **Never drop
+`account_deletion_requests`**, and never restore the finalizer with `drop` +
+`create` — that resets its ACL to `DEFAULT` and reopens it to every caller. Use
+`create or replace`.
+
 ### Adopting the contract locally
 
 There is no backfill. The gate denies every protected write by a confirmed

@@ -5,6 +5,8 @@
 // Finalization -- claiming, deleting and reporting a request -- is the next slice and is absent.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
+import type { IdentityClient } from "../../src/modules/identity/repository";
+import { identityServiceFor } from "../../src/modules/identity/service";
 import { anonClient, signIn, sql, uniqueEmail, uniqueUsername } from "../support/local-stack";
 
 type Actor = Awaited<ReturnType<typeof signIn>>;
@@ -263,5 +265,35 @@ describe("the username gate reaches every new write path", () => {
     // the whole of the refusal and the gate is not standing in for the resolution check.
     expect((await newcomer.client.rpc("claim_username", { p_username: uniqueUsername() })).error).toBeNull();
     expect((await requestDeletion(newcomer)).data).toBe("pending");
+  });
+});
+
+// The same two paths, reached through `src/modules/identity` instead of a raw client. The wrappers
+// hold no rule of their own -- the database decides -- so what is proved here is that the typed
+// surface forwards its arguments untouched and reports a refusal as a module error, not a null.
+describe("the typed identity module reaches the granted deletion RPCs", () => {
+  const serviceFor = (actor: Actor) => identityServiceFor(actor.client as unknown as IdentityClient);
+
+  it("hands a team over and schedules deletion through the service, refusals included", async () => {
+    const requester = await signIn(uniqueEmail("mod-requester"));
+    const service = serviceFor(requester);
+    const [handed, condemned] = [await startTeam(requester, "Module handed"), await startTeam(requester, "Module condemned")];
+    await join(handed, member);
+
+    // The handed team is still live and unnamed, so the database refuses and the wrapper throws.
+    await expect(service.requestAccountDeletion([condemned]))
+      .rejects.toThrow(/identity: request account deletion failed/);
+    expect(await requestFact("count(*)", requester)).toBe("0");
+
+    const transfer = await service.offerTeam(handed, member.userId);
+    expect(await offerFact("to_user_id", transfer)).toBe(member.userId);
+    expect(await serviceFor(member).acceptTeam(transfer)).toBe(handed);
+    expect(await ownerOf(handed)).toBe(member.userId);
+
+    // Triangulation: the identical call is now admitted, so the live team was the whole of the
+    // refusal -- and the recorded selection proves the condemned array reached the RPC intact.
+    expect(await service.requestAccountDeletion([condemned])).toBe("pending");
+    expect(await requestFact("state", requester)).toBe("pending");
+    expect(await selectedTeams(requester)).toBe(condemned);
   });
 });

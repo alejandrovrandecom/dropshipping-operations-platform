@@ -65,5 +65,27 @@ it("projects the username contract from the generated schema instead of restatin
     expect(`${name} = ${definition}`).toMatch(/Tables\["|Functions\["/);
   // The resolver's row shape is the database's, so a column added there arrives here for free.
   expect(source).toContain('Functions["resolve_team_usernames"]');
+  // The deletion state is the request RPC's own return type, not a hand-written union of it.
+  expect(source).toContain('Functions["request_account_deletion"]');
   expect(source).not.toMatch(/\binterface\b/); // a restated column set is a second source of truth
+});
+
+// Design: `service_role` is execute-only in SQL, and only RPCs granted to `authenticated` reach
+// `src/`. A wrapper around the claim, the finalizer or the status read would hand an application
+// caller an oracle over another account's deletion, so their absence is asserted, not assumed.
+it("wraps the granted deletion RPCs and keeps every privileged one out of the source", () => {
+  const sources = (dir: string) => readdirSync(dir, { recursive: true }).map(String).filter((p) => p.endsWith(".ts"));
+  const repository = readFileSync(`${MODULE_DIR}/repository.ts`, "utf8");
+  for (const granted of ["request_account_deletion", "request_team_ownership_transfer", "accept_team_ownership_transfer"])
+    expect(repository).toContain(`.rpc("${granted}"`);
+
+  // No module names a privileged entry point. The generated schema mirror is excluded here on
+  // purpose: restating every function the database has is exactly what makes it generated.
+  expect(sources("src/modules").length).toBeGreaterThan(0); // an empty walk would assert nothing
+  for (const file of sources("src/modules"))
+    for (const privileged of ["claim_account_deletion", "finalize_account_deletion", "account_deletion_status"])
+      expect(readFileSync(`src/modules/${file}`, "utf8")).not.toContain(privileged);
+
+  // `service_role` is granted in SQL alone, so no source file -- generated one included -- names it.
+  for (const file of sources("src")) expect(readFileSync(`src/${file}`, "utf8")).not.toContain("service_role");
 });

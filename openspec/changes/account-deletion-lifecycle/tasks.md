@@ -9,7 +9,7 @@ Chained PRs recommended: Yes
 Chain strategy: feature-branch-chain
 400-line budget risk: High
 
-PR3a 415-line exception stands. Historical: the rejected 575-line candidate and its 480-line exception are source, not evidence. 3b-2 is validated at 253 and 3b-3 at 264; Phase 8 remains forecast.
+PR3a 415-line exception stands. Historical: the rejected 575-line candidate and its 480-line exception are source, not evidence. 3b-2 is validated at 253, 3b-3 at 264 and PR4 at 385; nothing remains forecast.
 
 ### Suggested Work Units
 
@@ -55,6 +55,6 @@ PR3a 415-line exception stands. Historical: the rejected 575-line candidate and 
 - [x] 7.3 **REFACTOR/evidence:** Trigger/body inventories; cleanup cannot abort finalization; focused/full/runtime results, mutation, rollback.
 
 ## Phase 8: PR4 API/Docs (post-tracker; outside children)
-- [ ] 8.1 **RED:** Extend `tests/database/identity-module.test.ts` and `tests/identity/account-deletion.test.ts` for authenticated wrappers, no `service_role` in `src/`.
-- [ ] 8.2 **GREEN:** Extend only `src/modules/identity/{types,repository,service}.ts` with request/transfer APIs.
-- [ ] 8.3 **REFACTOR/evidence:** Update `docs/database/{architecture,operations}.md`, `docs/security/database-security.md`.
+- [x] 8.1 **RED:** Extend `tests/database/identity-module.test.ts` and `tests/identity/account-deletion.test.ts` for authenticated wrappers, no `service_role` in `src/`.
+- [x] 8.2 **GREEN:** Extend only `src/modules/identity/{types,repository,service}.ts` with request/transfer APIs.
+- [x] 8.3 **REFACTOR/evidence:** Update `docs/database/{architecture,operations}.md`, `docs/security/database-security.md`.
