@@ -29,9 +29,9 @@ Types excluded; snapshot identity includes them. Maintainer selected four ordere
 
 ## Phase 1: FK Foundation
 
-- [ ] 1.1 **RED:** Add `tests/database/account-deletion-finalization.test.ts` and extend `tests/database/launch-history.test.ts` for restrictive ownership, null actors, retained facts/order, and outsider isolation.
-- [ ] 1.2 **GREEN:** Create `supabase/migrations/20260902100000_account_deletion_fk_relaxation.sql` to relax the eight history/invitation FKs; keep `teams.owner_user_id` restrictive and `memberships.user_id` cascading.
-- [ ] 1.3 **REFACTOR/evidence:** Update FK inventories and forward-revoke proof in `tests/database/reproducibility.test.ts`; regenerate `src/lib/database.types.ts`; verify Unit 1.
+- [x] 1.1 **RED:** Add `tests/database/account-deletion-finalization.test.ts` and extend `tests/database/launch-history.test.ts` for restrictive ownership, null actors, retained facts/order, and outsider isolation.
+- [x] 1.2 **GREEN:** Create `supabase/migrations/20260902100000_account_deletion_fk_relaxation.sql` to relax the eight history/invitation FKs; keep `teams.owner_user_id` restrictive and `memberships.user_id` cascading.
+- [x] 1.3 **REFACTOR/evidence:** Update FK inventories and forward-revoke proof in `tests/database/reproducibility.test.ts`; regenerate `src/lib/database.types.ts`; verify Unit 1.
 
 ## Phase 2: Resolution State
 
