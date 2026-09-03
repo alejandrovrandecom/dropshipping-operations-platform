@@ -340,6 +340,70 @@ describe("finalization is the run itself, and it leaves only a username behind",
     expect(await teamCount(condemned)).toBe(0);
   });
 
+  // Scenarios: Issued/Addressed invitations are canceled; Partial failure is retried -- its ordered
+  // half. Both scopes must go before the identity, because the addressed scope is matched by the
+  // address the profile holds and the identity step takes that profile with it. So a failed
+  // revocation must stop the identity step, or the retry could never identify the work it still owes.
+  it("halts the identity step when revocation fails, then revokes both scopes on the next claim", async () => {
+    const subjectEmail = uniqueEmail("halt-subject");
+    const strangerEmail = uniqueEmail("halt-stranger");
+    const [subject, successor, host] = await Promise.all(
+      [subjectEmail, uniqueEmail("halt-successor"), uniqueEmail("halt-host")].map((e) => signIn(e)));
+    const [condemned, kept, hosted] = [await startTeam(subject, "Condemned"),
+      await startTeam(subject, "Handed over"), await startTeam(host, "Hosted")];
+    await join(kept, successor);
+
+    // Issued scope, in the team the subject hands over rather than the one it condemns: a condemned
+    // team takes its own invitations by cascade, so revocation there would prove nothing.
+    expect((await subject.client.rpc("create_invitation",
+      { target_team_id: kept, invitee_email: strangerEmail })).error).toBeNull();
+    // Addressed scope, and beside it the control that keeps this a scoped revocation and not a
+    // purge: both are issued by a third party, and the survivor carries the same recipient address
+    // as the subject's own invitation above -- so only the issuer tells the two apart.
+    for (const email of [subjectEmail, strangerEmail])
+      expect((await host.client.rpc("create_invitation",
+        { target_team_id: hosted, invitee_email: email })).error).toBeNull();
+
+    const offer = await subject.client.rpc("request_team_ownership_transfer",
+      { p_team_id: kept, p_to_user_id: successor.userId });
+    expect(offer.error).toBeNull();
+    expect((await successor.client.rpc("accept_team_ownership_transfer",
+      { p_transfer_id: offer.data as string })).error).toBeNull();
+    expect((await requestDeletion(subject, [condemned])).data).toBe("pending");
+
+    // The one injected fault in this suite, scoped to this subject's own addressed invitation:
+    // nothing in the schema refuses a revocation by itself, so the ordering contract needs a fault.
+    await sql(`create function public.halt_revocation() returns trigger language plpgsql
+      as $fn$ begin raise exception 'injected revocation failure'; end $fn$`);
+    await sql(`create trigger halt_revocation before delete on public.team_invitations
+      for each row when (old.email = '${subjectEmail}') execute function public.halt_revocation()`);
+    try {
+      expect(await claim(subject.userId)).toBe("in_progress");
+      expect(await finalize(subject.userId)).toBe("failed");
+      // Step one stands; step two failed; step three never ran. The account, the address the
+      // addressed scope is matched by, and both invitations are all still here to retry with.
+      expect(await teamCount(condemned)).toBe(0);
+      expect(await profiles(subject.userId)).toBe(1);
+      expect(await rows("select count(*) as n from auth.users where id = $1", [subject.userId])).toBe(1);
+      expect(await invitations(kept)).toHaveLength(1);
+      expect(await invitations(hosted)).toHaveLength(2);
+      expect(await attemptsOf(subject.userId)).toBe(1); // the claim counted it; finalize never does
+    } finally {
+      await sql("drop trigger halt_revocation on public.team_invitations");
+      await sql("drop function public.halt_revocation()");
+    }
+
+    // Continuation is the same pair of calls, and the work is still identifiable.
+    expect(await claim(subject.userId)).toBe("in_progress");
+    expect(await attemptsOf(subject.userId)).toBe(2);
+    expect(await finalize(subject.userId)).toBe("done");
+    // Both scopes gone, and only those two: the third party's other invitation stands.
+    expect(await invitations(kept)).toEqual([]);
+    expect(await invitations(hosted)).toEqual([
+      `${strangerEmail}: by=${host.userId} accepted_by=null accepted=false hashed=true`]);
+    expect(await profiles(subject.userId)).toBe(0);
+  });
+
   // Scenario: No invocation occurs -- and the design's "No scheduler is not no purge". A receipt
   // nobody claims stays pending, because nothing in this schema can run a deletion on a timer.
   // Retention is a later child's; the absence a timer would need is proved here, not assumed.
