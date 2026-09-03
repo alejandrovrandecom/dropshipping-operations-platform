@@ -1,6 +1,9 @@
 # Apply Progress: Account Deletion Lifecycle
 
-**Mode**: Strict TDD · **Delivery**: chained PR slices, `stacked-to-main`. No `size:exception`.
+**Mode**: Strict TDD · **Delivery**: chained PR slices, `stacked-to-main`. One `size:exception`, and
+it is scoped: the maintainer accepted it for the **PR3a candidate alone**, at 415 native changed
+lines. PR1, PR2a and PR2b landed inside the 400-line budget without one, and **PR3b, PR4 and every
+later slice retain the 400-line budget** — this exception does not travel down the chain.
 
 ## Completed Tasks
 
@@ -13,11 +16,16 @@
 - [x] 3.1 RED — request resolution, self-only receipt and request gate cases
 - [x] 3.2 GREEN — `20260902120000_account_deletion_requests.sql`
 - [x] 3.3 REFACTOR/evidence — request inventories (triggers 11→12), regenerated types
+- [x] 4.1 RED — bounded `pending`/`failed` claims, the refused fourth, and `tests/isolation/account-deletion-rls.test.ts`
+- [x] 4.2 GREEN — `20260902130000_account_deletion_claim_ledger.sql`
+- [x] 4.3 REFACTOR/evidence — claim/status inventories, `service_role` grants, forward revoke, types
 
-Phases 4–5 remain unstarted.
+Phases 5 (PR3b finalizer) and 6 (PR4 typed API) remain unstarted.
 
-> The combined Unit 2 attempt is **historical**: it was carved into PR2a and PR2b. PR2a is below
-> and independently green; nothing in this file is currently blocked.
+> Two attempts in this file are **historical**, and neither contributes a completed task above.
+> The combined Unit 2 was carved into PR2a and PR2b, both green. The combined **PR3** was
+> re-carved into PR3a (below, green) and PR3b (not started); its 4.1–4.4 entries are withdrawn
+> from the list above because the slice they described was never delivered.
 
 ---
 
@@ -469,7 +477,295 @@ transaction with the gated receipt insert and no grant reaches them by any other
 - `pg_catalog.unnest` is spelled qualified, and the in-body comments avoid `from`, `join`, `update`
   and `insert into` entirely, because the definer-body audit reads `prosrc` including its comments.
 
+---
+
+# PR3 attempt (HISTORICAL, FAILED) — combined `pr3-account-deletion-finalization`
+
+**Not delivered.** This slice shipped `claim_account_deletion` with **no attempt bound**: a `failed`
+receipt was re-claimable without limit, so the threat-matrix row "unbounded privileged retry" had no
+design response and no test. It measured 399 authored lines with the bound absent, so adding the
+bound could not fit; the slice was re-carved into **PR3a** (status, bounded claim, ledger — below,
+green) and **PR3b** (the finalizer, unchanged — not started). Its content hash
+`sha256:c3cf34b070a4ad783f46b0cc1e910337d8e35f8a9a185607e08e508441db7e1b` carries no retry budget.
+Nothing below this heading is claimed as completed work; it is kept because PR3b is reconstructed
+from it, exactly as PR2b was reconstructed from the combined Unit 2. The verified finalizer body and
+its tests were copied out of the worktree to `/tmp/opencode/pr3-combined-backup/` before the carve.
+
+Attempt ordinal 7, generation 6, work unit `pr3-account-deletion-finalization`,
+revision `sha256:fa1cf4350bbcbf6a7e60540cb4117140518b59118074cf30f5813090810513a2`.
+
+## Scope
+
+Ships `account_deletion_status`, `claim_account_deletion` and `finalize_account_deletion`, the only
+`service_role` grants in the schema, plus the three-step finalizer itself: condemned teams, both
+invitation revocation scopes, the auth identity, bounded per-step retry, and the lazy receipt purge.
+No new table, column, enum, trigger or policy — this slice is functions and grants alone, which is
+why every inventory except the function one is untouched. PR4's typed application API and the docs
+are deliberately absent.
+
+## TDD Cycle Evidence
+
+| Task | Test | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|---|---|---|---|---|---|---|---|
+| 4.1 | `tests/isolation/account-deletion-rls.test.ts` | Integration | N/A (new) | 2 failed: `PGRST202` on all three, and an empty privilege set | 3/3 passed | 4 caller kinds × 3 RPCs, plus the catalog read | uniform refusal collapsed into one set assertion |
+| 4.2 | `tests/database/account-deletion-finalization.test.ts` | Integration | 4/4 passed | 6 failed: `function public.claim_account_deletion(unknown) does not exist` and the same for `account_deletion_status` | 10/10 passed | 6 cases, each with its own second call | `status`/`claim`/`finalize`/`invite`/`profiles`/`teams`/`addressed` helpers extracted |
+| 4.3 | (driven by 4.1 and 4.2) | Integration | — | — | 13/13 passed | 3 functions, 3 steps, 1 purge | explicit enum casts, dead guard removed |
+| 4.4 | `tests/database/reproducibility.test.ts` | Reproducibility | 27/27 passed | 3 failed: function inventory 20→23, definer bodies 20→23, generated types | 28/28 passed | 3 inventory tuples + a new forward-revoke proof | — |
+
+RED was executed, not assumed. Before the migration all six new behavioral tests failed naming an
+RPC that did not exist, and the isolation file failed because PostgREST could not resolve any of the
+three at all — `PGRST202` where the contract requires `42501`.
+
+### Mutation proof
+
+| Mutation | Expected | Observed | Restored |
+|---|---|---|---|
+| purge age predicate dropped | only the purge test breaks | 5 failed, every one `expected null to be 'done'` — the run swept its own receipt and every other | Yes, `db reset` |
+| `i.email = subject_email` dropped | only the addressed scope breaks | Exactly 1 failed: `cancels invitations issued by and addressed to the account…`, `expected 1 to be +0`; 9 passed | Yes, `db reset` |
+| `grant … to service_role, authenticated` | only the isolation file breaks | 3 failed, and the second is the harm itself: `expected 'done' to be 'pending'` — the subject finalized its own account | Yes, `db reset` |
+
+The migration was restored byte-identically after each round (`diff -q` against a pre-mutation copy).
+
+**A mutation that did not fail is the finding of this slice.** The purge began as
+`where r.state = 'done' and r.user_id <> p_user_id and r.updated_at < now() - interval '30 days'`.
+Removing the self-exclusion broke nothing; removing the age predicate *also* broke nothing. Each
+conjunct was carrying the other's proof, so the test proved only their conjunction. The self-exclusion
+turned out to be dead code: the statement immediately above stamps the row with the same
+transaction's `now()`, so the age predicate already excludes it and no input can make the two differ.
+It was removed rather than left as an untestable guard, and the purge test gained a third account —
+another subject's *recent* completed receipt — which is what makes the age predicate discriminating.
+The mutation above now fails loudly.
+
+The definer-body audit then caught a comment of mine: `prosrc` includes comments, and "tell apart
+from this one" reads as an unqualified relation reference. Reworded, as PR2b's notes warned.
+
+## Work Unit Evidence
+
+| Evidence | Value |
+|---|---|
+| Focused | `pnpm exec vitest run tests/database/account-deletion-finalization.test.ts tests/isolation/account-deletion-rls.test.ts tests/database/reproducibility.test.ts` → **41 passed (3 files)** |
+| Focused rerun, no reset | The two behavioral files against the database the full suite left dirty → **13 passed (2 files)** |
+| Full suite | `pnpm test` → **165 passed, 15 files** (was 155/14) |
+| Runtime harness | `pnpm db:smoke --require-runtime` → **SMOKE OK (static + rebuild)**, 10 migrations applied in order |
+| Rollback boundary | Delete `supabase/migrations/20260902130000_account_deletion_finalization.sql` and `tests/isolation/account-deletion-rls.test.ts`; revert the additive hunks in `tests/database/account-deletion-finalization.test.ts` and `tests/database/reproducibility.test.ts`; regenerate `src/lib/database.types.ts`. PR1, PR2a and PR2b are untouched and no applied migration is edited. |
+
+Full-suite count moves 155 → 165: six new finalization tests, three isolation tests, and one new
+reproducibility proof.
+
+## Review Budget
+
+| Bucket | Lines |
+|---|---|
+| `20260902130000_account_deletion_finalization.sql` | 111 |
+| `tests/isolation/account-deletion-rls.test.ts` | 66 |
+| `tests/database/account-deletion-finalization.test.ts` | 185 + 3 = 188 |
+| `tests/database/reproducibility.test.ts` | 33 + 1 = 34 |
+| **Authored total** | **399** (budget 400) |
+| Generated types (excluded) | 12 |
+
+One line inside the budget, without an exception. The first measurement was 416; the overrun was
+removed by compressing prose only — no assertion, DDL statement, grant, revoke or inventory was
+dropped. An intermediate pass that reached the number by folding comments into 190-character lines
+was thrown away and redone as genuinely shorter wrapped text, because gaming the count is not
+compression.
+
+## Deviations from Design
+
+**One, and it removes something rather than adding it.** Design says the finalizer purges
+"expiry-eligible receipts best-effort"; the first implementation also excluded the current subject
+explicitly. The mutation round proved that clause untestable and unreachable, so it is gone and the
+comment records why a special case would be indistinguishable from the age boundary. The retention
+constant is 30 days, which design left open precisely because the purge is best-effort.
+
+Two design-silent decisions worth review: `finalize_account_deletion` **refuses** a request that has
+not been claimed (`22023`), so the observable `in_progress` state cannot be skipped, and it is the
+claim that admits both `pending` and `failed` — retry is therefore claim-then-finalize, the same pair
+of calls either way. And `account_deletion_status` answers `null` for an account that never asked;
+only `service_role` can ever draw that distinction, so it is not an oracle.
+
+## Issues Found
+
+- The retry test uses no injected fault. The subject starts a *new* team after its request is
+  already `pending`, which nothing forbids, so by finalization time the identity step is genuinely
+  refused by `teams_owner_user_id_fkey`. That same restriction is what orders the whole procedure —
+  a `done` account that owned a condemned team is itself the proof the team went first.
+- The issued-invitation scope only proves anything if the invitation outlives its team, so the test
+  hands that team to a member instead of condemning it; condemning it would delete the invitation by
+  cascade and the revocation would prove nothing. A fourth invitation, issued by a third party to the
+  same address, is the control that keeps this a scoped revocation rather than a purge.
+- `case when … then 'failed' else 'done' end` resolves to `text`, which has no assignment cast to the
+  enum. It is spelled `::public.account_deletion_state`, exactly as PR2b's linter finding required.
+- Three post-`db reset` runs reported `Database client error. Retrying the connection.` and cleared
+  on rerun without recurring. PR1 and PR2's evidence record the same container-restart flake.
+
+---
+
+# PR3a — `pr3a-account-deletion-claim-ledger` (base `6c7befa`)
+
+Attempt ordinal 8, generation 7, work unit `pr3a-account-deletion-claim-ledger`,
+revision `sha256:b5cc7e60faa9aa2569e9e9fa10eb2c03952d4f5975cdeaeffd5425a38a33c50b`.
+Carved from the failed combined attempt above. `20260902130000_account_deletion_finalization.sql`
+was deleted and replaced by `20260902130000_account_deletion_claim_ledger.sql`; no combined
+filename, finalizer body, finalizer test or finalizer grant remains anywhere in the tree.
+Content hash of the four authored files: `86a480933e61dbd45621ef8848ae2dc9bcc3ee5c2fc5a9983a60e491924cc3ca`;
+with the generated types included, `c2b2fdb23c25396833c7f00c4a1809c3352e37ff035e10694c699c61a3c7d70a`.
+
+## Scope
+
+Ships the `attempts` ledger column on the receipt, `account_deletion_status`,
+`claim_account_deletion` **with the bound the combined attempt lacked**, and the only two
+`service_role` grants in the schema. Three executions are admitted — one initial plus two retries —
+and the fourth claim is refused by the same predicate that admitted the first.
+
+Deliberately absent, all of it PR3b's or PR4's: `finalize_account_deletion` and its grant, ordered
+deletion, invitation revocation, auth identity deletion, lazy receipt purge, and every typed
+`src/modules/identity/` wrapper. This slice deletes nothing; it only admits and counts.
+
+## TDD Cycle Evidence
+
+| Task | Test | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|---|---|---|---|---|---|---|---|
+| 4.1 | `tests/database/account-deletion-finalization.test.ts` | Integration | 4/4 passed (PR1 describes, on the PR2b base) | 3 failed: `function public.account_deletion_status(unknown) does not exist`, same for `claim_account_deletion` | 7/7 passed | in-flight, completed and unknown subjects each take a different path | `privileged`/`status`/`claim`/`attemptsOf`/`settle` helpers extracted |
+| 4.1 | `tests/isolation/account-deletion-rls.test.ts` | Integration | N/A (new) | 3 failed: `PGRST202` where `42501` is required, `column "attempts" does not exist`, and an empty privilege set | 3/3 passed | 4 caller kinds × 2 entry points, plus the catalog read | refusals collapsed into one set assertion |
+| 4.2 | (driven by 4.1) | Integration | — | — | 10/10 passed | 1 column, 2 functions, 1 bound | `admissions` named constant instead of a literal 3 |
+| 4.3 | `tests/database/reproducibility.test.ts` | Reproducibility | 27/27 passed | 4 failed: column inventory, function inventory, definer bodies 20→22, generated types | 28/28 passed | 3 inventories extended + a new forward-revoke proof | — |
+
+RED was executed, not assumed. **The fourth-claim case is genuinely new here**: the combined attempt
+had no bound, so no test could have covered it. It was written before the `attempts < admissions`
+predicate existed and failed against the unbounded body.
+
+### Mutation proof
+
+| Mutation | Expected | Observed | Restored |
+|---|---|---|---|
+| `and r.attempts < admissions` removed | only the bound test breaks | Exactly 1 failed: `admits three executions…refuses the fourth`, `expected 'in_progress' to be 'failed'`; 9 passed | Yes, `db reset` |
+| `attempts = r.attempts + 1` removed | both admission tests break, isolation stands | Exactly 2 failed, each `expected +0 to be 1`; 8 passed | Yes, `db reset` |
+| `r.state in ('pending','failed')` narrowed to `= 'pending'` | only retry continuation breaks | Exactly 1 failed: `expected 'failed' to be 'in_progress'` on the second admission; 9 passed | Yes, `db reset` |
+| `grant … to service_role, authenticated` | only the isolation file breaks | 3 failed, and the second is the harm itself: `expected 'in_progress' to be 'pending'` — the subject claimed its own deletion | Yes, `db reset` |
+
+Four disjoint failures: the bound, the counter, the `failed` admission and the grant each carry
+their own proof. The migration was restored byte-identically after every round (`diff -q` against a
+pre-mutation copy).
+
+## Work Unit Evidence
+
+| Evidence | Value |
+|---|---|
+| Focused | `pnpm exec vitest run tests/database/account-deletion-finalization.test.ts tests/isolation/account-deletion-rls.test.ts tests/database/reproducibility.test.ts` → **38 passed (3 files)** |
+| Focused rerun, no reset | The two behavioral files against the database the full suite left dirty → **10 passed (2 files)** |
+| Full suite | `pnpm test` → **162 passed, 15 files** (was 155/14 at PR2b) |
+| Runtime harness | `pnpm db:smoke --require-runtime` → **SMOKE OK (static + rebuild)**, 10 migrations applied in order |
+| Rollback boundary | Delete `supabase/migrations/20260902130000_account_deletion_claim_ledger.sql` and `tests/isolation/account-deletion-rls.test.ts`; revert the additive hunks in `tests/database/account-deletion-finalization.test.ts` and `tests/database/reproducibility.test.ts`; regenerate `src/lib/database.types.ts`. PR1, PR2a and PR2b are untouched, no applied migration is edited, and the receipt table is never dropped. |
+
+Full-suite count moves 155 → 162: three claim tests, three isolation tests, one forward-revoke proof.
+
+## Review Budget
+
+| Bucket | Lines (`additions + deletions`) |
+|---|---|
+| `20260902130000_account_deletion_claim_ledger.sql` | 58 |
+| `tests/isolation/account-deletion-rls.test.ts` | 66 |
+| `tests/database/account-deletion-finalization.test.ts` | 84 + 3 = 87 |
+| `tests/database/reproducibility.test.ts` | 38 + 4 = 42 |
+| **Authored total** | **253** (budget 400; forecast ~250) |
+| Generated types (excluded from the authored count) | 11 |
+| Snapshot identity (authored + generated) | 264 |
+
+No compression was needed, so every argument in the migration and the tests is intact.
+
+### Maintainer-approved `size:exception` — PR3a only
+
+The **authored** count is 253 and never moved; it is 147 lines inside the 400-line budget and needs
+no exception. The exception is about the **native** changed-line count, which also carries the
+regenerated types and the SDD artifacts this slice revised while re-carving the failed combined PR3.
+
+| Bucket | Native lines (`additions + deletions`) |
+|---|---|
+| Authored product + tests (the four files above) | 253 |
+| Generated `src/lib/database.types.ts` | 11 |
+| Revised `design.md` (re-carve to six slices, PR3a/PR3b split, bound decision) | 93 |
+| Revised `tasks.md` (Phase 4/5 split, work-unit table, forecast) | 53 |
+| **Native total, excluding this evidence file** | **410** |
+| **Maintainer-accepted ceiling for this candidate** | **415** |
+
+**Measured 410 against an accepted 415, so the candidate is inside the exception with 5 lines of
+headroom.** `apply-progress.md` is deliberately outside the counted set: it is the evidence ledger
+being written by the closure that records the exception, so counting it would make the number
+self-referential and unstable on every edit. The 415 figure is the maintainer's stated acceptance for
+this exact candidate, not a re-derivation; the 410 above is what this closure actually measured.
+
+Scope of the exception, stated so no later slice inherits it:
+
+- It applies to **PR3a and nothing else**. PR3b (`~240` authored, finalizer) and PR4 (typed API and
+  docs) each keep the **400-line budget** and must be split again if they exceed it.
+- It buys **no behavior**. No assertion, DDL statement, grant, revoke, inventory or test was added,
+  removed or relaxed to obtain it; the candidate is byte-identical to the one that went green.
+- The oversize is artifact-driven, not code-driven. The 146 lines of `design.md` and `tasks.md` are
+  the record of *why* the combined PR3 was re-carved — the argument a reviewer needs most here, and
+  the one thing that could not be deferred to a later slice without stranding PR3b.
+
+## Closure Verification (attempt ordinal 9, `pr3a-size-exception-closure`)
+
+Active revision `sha256:a365abf6d4f57e7dc1fa05d1d5a85498b648b745aa0b3a1cae27f3723e3a8cdb`. No
+migration, test, generated type, design or task file was touched; this section and the header note
+are the only edits. The candidate was re-verified unchanged:
+
+| Evidence | Value |
+|---|---|
+| Content hash, four authored files | `86a480933e61dbd45621ef8848ae2dc9bcc3ee5c2fc5a9983a60e491924cc3ca` — **unchanged** |
+| Content hash, with generated types | `c2b2fdb23c25396833c7f00c4a1809c3352e37ff035e10694c699c61a3c7d70a` — **unchanged** |
+| Focused | `pnpm exec vitest run tests/database/account-deletion-finalization.test.ts tests/isolation/account-deletion-rls.test.ts tests/database/reproducibility.test.ts` → **38 passed (3 files)** |
+| Focused rerun, no reset | The two behavioral files against the database the full suite left dirty → **10 passed (2 files)** |
+| Full suite | `pnpm test` → **162 passed, 15 files** |
+| Runtime harness | `pnpm db:smoke --require-runtime` → **SMOKE OK (static + rebuild)**, 10 migrations in order |
+
+No mutation round was re-run: the four disjoint mutations above were executed against this exact
+revision, and nothing under test has changed since.
+
+## Deviations from Design
+
+**One, and it is a narrowing.** `tasks.md` 4.1 asked for "no finalize outside `in_progress`". That
+behavior belongs to a function this slice deliberately does not ship, so it cannot be proved here.
+The test asserts the stronger in-slice fact instead — `public` holds **no** `finalize%` function at
+all — and the task text was corrected to say so. PR3b task 5.1 still owns the `22023` refusal.
+
+Design decisions are otherwise implemented as written: the bound is `attempts` on the receipt,
+incremented by `claim` alone; three executions total; the fourth returns the standing `failed`.
+
+Two design-silent decisions worth review: an already-`in_progress` receipt is **not** re-admitted, so
+two callers racing the same request cannot both spend an execution and `attempts` counts admissions
+rather than calls; and the exhausted refusal deliberately has no error path, so the claim's answer to
+an exhausted, a completed and an unknown subject is byte-for-byte the answer a status read gives.
+
+## Issues Found
+
+- The bound needs a `failed` receipt, and the only thing that will ever write one is PR3b's
+  finalizer. The bound test therefore seeds `failed` through `sql()` — sanctioned explicitly by the
+  design's slice-independence note — and the helper is named `settle` and commented as writing the
+  next slice's outcome. It exercises no PR3b surface.
+- `attempts` is added to a table PR2b already writes through `request_account_deletion`, an RPC that
+  names no such column. `not null default 0` is what keeps that RPC correct and what makes the alter
+  safe on a table already holding receipts; the test reads `attempts = 0` straight after the PR2b
+  RPC returns `pending`, and the nullability inventory pins the `not null` half.
+- The definer-body audit moves 20 → 22 and passed first time: both bodies are schema-qualified and
+  neither carries an in-body comment, so `prosrc` holds no unqualified `from`/`join`/`update`.
+- One `db reset` during the mutation rounds left the stack briefly unreachable and cleared on rerun,
+  the same container-restart flake PR1, PR2 and the combined PR3 each recorded.
+
+## PR3b reconstruction notes
+
+Preserved so PR3b needs no rediscovery. Its migration is `20260902140000_account_deletion_finalization.sql`
+and its body is the verified one in `/tmp/opencode/pr3-combined-backup/`, minus the `status` and
+`claim` functions PR3a now owns: three per-step `begin/exception` blocks in the order teams →
+invitations (both scopes, unaccepted only) → `auth.users`; a `22023` refusal for anything not
+`in_progress`; `done`/`failed` written by `finalize` alone; the lazy purge with its 30-day age
+predicate and **no** self-exclusion clause (proved dead code by mutation — the same statement stamps
+the row with the run's own `now()`); a third account holding a *recent* completed receipt is what
+makes the age predicate discriminating. `case … end` must be cast `::public.account_deletion_state`.
+The isolation file's `PRIVILEGED` array and the reproducibility function inventory, definer-body
+count (22 → 23) and forward-revoke proof each gain `finalize_account_deletion`.
+
 ## Remaining Tasks
 
-- [ ] 4.1–4.4 PR3 finalization
-- [ ] 5.1–5.3 PR4 typed API and ledger
+- [ ] 5.1–5.3 PR3b finalizer
+- [ ] 6.1–6.3 PR4 typed API and ledger
