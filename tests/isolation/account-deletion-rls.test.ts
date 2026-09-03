@@ -1,16 +1,18 @@
 // The privileged deletion surface, proved closed from the outside. `service_role` is the only
-// principal that may claim or observe a deletion, and it is execute-only -- it holds no privilege on
-// the receipt itself, so there is no second door. Each refusal is asserted verbatim, code and message
-// together, because the message is the disclosure surface: it may name the function the caller
-// already knew it was calling, and nothing of the subject, its state or the tenant it still owns.
-// Every `it` is the "Finalization is unauthorized" scenario from the change's specs.
+// principal that may observe, claim or perform a deletion, and it is execute-only -- it holds no
+// privilege on the receipt itself, so there is no second door. Each refusal is asserted verbatim,
+// code and message together, because the message is the disclosure surface: it may name the function
+// the caller already knew it was calling, and nothing of the subject, its state or the tenant it
+// still owns. Every `it` is the "Finalization is unauthorized" scenario from the change's specs.
 import { beforeAll, describe, expect, it } from "vitest";
 import { anonClient, signIn, sql, uniqueEmail } from "../support/local-stack";
 
 type Actor = Awaited<ReturnType<typeof signIn>>;
 
-/** The privileged entry points this slice ships, alphabetical; each takes the subject id, nothing else. */
-const PRIVILEGED = ["account_deletion_status", "claim_account_deletion"];
+/** Every privileged entry point, alphabetical; each takes the subject id, nothing else. The
+ *  finalizer joins the pair the ledger shipped: it is the one that actually deletes, so a client
+ *  role reaching it would be strictly worse than reaching either of the other two. */
+const PRIVILEGED = ["account_deletion_status", "claim_account_deletion", "finalize_account_deletion"];
 
 /** Every fact below is read privileged, because no client holds a single privilege on this table. */
 const fact = async (expression: string, source: string, values: unknown[] = []): Promise<string | null> =>
@@ -35,14 +37,14 @@ beforeAll(async () => {
 });
 
 describe("no client role reaches the privileged claim", () => {
-  it("refuses both entry points to the subject, an insider, an outsider and anon alike", async () => {
+  it("refuses every entry point to the subject, an insider, an outsider and anon alike", async () => {
     const callers = [subject.client, insider.client, outsider.client, anonClient()];
     const refusals = await Promise.all(callers.flatMap((client) =>
       PRIVILEGED.map((name) => client.rpc(name, { p_user_id: subject.userId }))));
 
-    // Eight calls collapse to two answers, one per function and none per caller: the subject cannot
-    // claim its own deletion, the insider cannot read a teammate's state, and neither the outsider
-    // nor anon learns whether the subject, its request or its team exists.
+    // Twelve calls collapse to three answers, one per function and none per caller: the subject can
+    // neither claim nor perform its own deletion, the insider cannot read a teammate's state, and
+    // neither the outsider nor anon learns whether the subject, its request or its team exists.
     expect([...new Set(refusals.map((r) => `${r.error?.code}: ${r.error?.message}`))].sort())
       .toEqual(PRIVILEGED.map((name) => `42501: permission denied for function ${name}`));
   });

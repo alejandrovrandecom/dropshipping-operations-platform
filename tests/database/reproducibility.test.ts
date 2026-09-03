@@ -99,9 +99,9 @@ const INVENTORY: Array<[string, string, string[]]> = [
     as fact from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' order by 1`, [
     'accept_invitation: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'accept_team_ownership_transfer: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
-    // The two privileged entry points, and the only `service_role` grants in the schema. Their
+    // The three privileged entry points, and the only `service_role` grants in the schema. Their
     // absence of an `authenticated` grant is the assertion: the subject may ask for its own
-    // deletion, and no client role -- not even that subject -- may claim or observe it.
+    // deletion, and no client role -- not even that subject -- may observe, claim or perform it.
     'account_deletion_status: secdef=true config=search_path="" acl=postgres=X/postgres, service_role=X/postgres',
     'apply_checklist_template: secdef=true config=search_path="" acl=postgres=X/postgres, authenticated=X/postgres',
     'claim_account_deletion: secdef=true config=search_path="" acl=postgres=X/postgres, service_role=X/postgres',
@@ -112,6 +112,7 @@ const INVENTORY: Array<[string, string, string[]]> = [
     // and the predicate would otherwise be a self-status oracle with no caller in this contract.
     'enforce_username_claim: secdef=true config=search_path="" acl=postgres=X/postgres',
     'ensure_owner_membership: secdef=true config=search_path="" acl=postgres=X/postgres',
+    'finalize_account_deletion: secdef=true config=search_path="" acl=postgres=X/postgres, service_role=X/postgres',
     'handle_new_user: secdef=true config=search_path="" acl=postgres=X/postgres',
     'handle_user_email_change: secdef=true config=search_path="" acl=postgres=X/postgres',
     'has_username: secdef=true config=search_path="" acl=postgres=X/postgres',
@@ -276,7 +277,7 @@ it("references every object in a definer body through a schema qualifier", async
   // relation target -- `from`, `join`, `insert into`, `update` -- while skipping `do update set`
   // and plpgsql's `returning ... into <variable>`, neither of which names a relation.
   const bodies = await facts("select prosrc as fact from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'");
-  expect(bodies).toHaveLength(22);
+  expect(bodies).toHaveLength(23);
   for (const body of bodies)
     for (const [, ref] of body.matchAll(/\b(?:from|join|insert\s+into|update)\s+(?!set\b)([a-z_][\w.]*)/gi)) expect(ref).toContain(".");
 });
@@ -389,17 +390,23 @@ it("closes the launch surface through a forward revoke, leaving applied migratio
     "apply_checklist_template=true", "create_launch=true", "restore_launch=true",
     "set_default_checklist_template=true", "transition_launch=true"]);
 });
-it("closes the claim ledger through a forward revoke that never drops the receipt", async () => {
-  // Rollback for this slice is the revoke and nothing else: dropping `account_deletion_requests`
-  // would destroy the one record a finished deletion leaves behind, so the table is deliberately
-  // absent below, exactly as the registry is. As always, the last statement raises and undoes it.
+it("closes the whole privileged surface through a forward revoke that never drops the receipt", async () => {
+  // Rollback for both deletion slices is the revoke and nothing else: dropping
+  // `account_deletion_requests` would destroy the one record a finished deletion leaves behind, so
+  // the table is deliberately absent below, exactly as the registry is. The finalizer is checked by
+  // name because it is the entry point that actually deletes -- closing the other two while leaving
+  // it open would be the one rollback that changes nothing. The last statement raises and undoes it.
   await expect(sql(`do $$
     begin
       revoke execute on function public.account_deletion_status(uuid),
-        public.claim_account_deletion(uuid) from service_role;
+        public.claim_account_deletion(uuid), public.finalize_account_deletion(uuid) from service_role;
       if pg_catalog.has_function_privilege('service_role',
         'public.claim_account_deletion(uuid)', 'execute') then
         raise exception 'forward revoke left the claim open';
+      end if;
+      if pg_catalog.has_function_privilege('service_role',
+        'public.finalize_account_deletion(uuid)', 'execute') then
+        raise exception 'forward revoke left the finalizer open';
       end if;
       if pg_catalog.to_regclass('public.account_deletion_requests') is null then
         raise exception 'rollback must never drop the receipt';
@@ -407,12 +414,13 @@ it("closes the claim ledger through a forward revoke that never drops the receip
       raise exception 'forward revoke verified';
     end $$;`)).rejects.toThrow("forward revoke verified");
 
-  // The aborted block put both grants back, and the receipt was never at risk to begin with.
+  // The aborted block put all three grants back, and the receipt was never at risk to begin with.
   expect(await facts(`select p.proname::text || '=' ||
     pg_catalog.has_function_privilege('service_role', p.oid, 'execute')::text as fact
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'
-    and p.proname in ('account_deletion_status', 'claim_account_deletion') order by 1`)).toEqual([
-    "account_deletion_status=true", "claim_account_deletion=true"]);
+    and p.proname in ('account_deletion_status', 'claim_account_deletion',
+      'finalize_account_deletion') order by 1`)).toEqual([
+    "account_deletion_status=true", "claim_account_deletion=true", "finalize_account_deletion=true"]);
 });
 it("relaxes an author to null on deletion and cannot be rolled back once it has", async () => {
   // The deletion slice's rollback is one-way, and this is the proof rather than the claim. The block
