@@ -13,7 +13,7 @@ export type Database = {
         Row: {
           checklist_id: string
           created_at: string
-          created_by: string
+          created_by: string | null
           id: string
           is_complete: boolean
           is_required: boolean
@@ -24,7 +24,7 @@ export type Database = {
         Insert: {
           checklist_id: string
           created_at?: string
-          created_by?: string
+          created_by?: string | null
           id?: string
           is_complete?: boolean
           is_required?: boolean
@@ -35,7 +35,7 @@ export type Database = {
         Update: {
           checklist_id?: string
           created_at?: string
-          created_by?: string
+          created_by?: string | null
           id?: string
           is_complete?: boolean
           is_required?: boolean
@@ -63,7 +63,7 @@ export type Database = {
       launch_checklist_template_items: {
         Row: {
           created_at: string
-          created_by: string
+          created_by: string | null
           id: string
           is_required: boolean
           label: string
@@ -73,7 +73,7 @@ export type Database = {
         }
         Insert: {
           created_at?: string
-          created_by?: string
+          created_by?: string | null
           id?: string
           is_required?: boolean
           label: string
@@ -83,7 +83,7 @@ export type Database = {
         }
         Update: {
           created_at?: string
-          created_by?: string
+          created_by?: string | null
           id?: string
           is_required?: boolean
           label?: string
@@ -111,7 +111,7 @@ export type Database = {
       launch_checklist_templates: {
         Row: {
           created_at: string
-          created_by: string
+          created_by: string | null
           id: string
           is_default: boolean
           name: string
@@ -119,7 +119,7 @@ export type Database = {
         }
         Insert: {
           created_at?: string
-          created_by?: string
+          created_by?: string | null
           id?: string
           is_default?: boolean
           name: string
@@ -127,7 +127,7 @@ export type Database = {
         }
         Update: {
           created_at?: string
-          created_by?: string
+          created_by?: string | null
           id?: string
           is_default?: boolean
           name?: string
@@ -153,7 +153,7 @@ export type Database = {
       launch_checklists: {
         Row: {
           created_at: string
-          created_by: string
+          created_by: string | null
           id: string
           launch_id: string
           origin_template_id: string | null
@@ -161,7 +161,7 @@ export type Database = {
         }
         Insert: {
           created_at?: string
-          created_by?: string
+          created_by?: string | null
           id?: string
           launch_id: string
           origin_template_id?: string | null
@@ -169,7 +169,7 @@ export type Database = {
         }
         Update: {
           created_at?: string
-          created_by?: string
+          created_by?: string | null
           id?: string
           launch_id?: string
           origin_template_id?: string | null
@@ -201,7 +201,7 @@ export type Database = {
       }
       launch_events: {
         Row: {
-          actor_user_id: string
+          actor_user_id: string | null
           created_at: string
           from_status: Database["public"]["Enums"]["launch_status"] | null
           kind: Database["public"]["Enums"]["launch_event_kind"]
@@ -211,7 +211,7 @@ export type Database = {
           to_status: Database["public"]["Enums"]["launch_status"] | null
         }
         Insert: {
-          actor_user_id?: string
+          actor_user_id?: string | null
           created_at?: string
           from_status?: Database["public"]["Enums"]["launch_status"] | null
           kind: Database["public"]["Enums"]["launch_event_kind"]
@@ -221,7 +221,7 @@ export type Database = {
           to_status?: Database["public"]["Enums"]["launch_status"] | null
         }
         Update: {
-          actor_user_id?: string
+          actor_user_id?: string | null
           created_at?: string
           from_status?: Database["public"]["Enums"]["launch_status"] | null
           kind?: Database["public"]["Enums"]["launch_event_kind"]
@@ -250,7 +250,7 @@ export type Database = {
       launches: {
         Row: {
           created_at: string
-          created_by: string
+          created_by: string | null
           id: string
           name: string
           notes: string | null
@@ -261,7 +261,7 @@ export type Database = {
         }
         Insert: {
           created_at?: string
-          created_by?: string
+          created_by?: string | null
           id?: string
           name: string
           notes?: string | null
@@ -272,7 +272,7 @@ export type Database = {
         }
         Update: {
           created_at?: string
-          created_by?: string
+          created_by?: string | null
           id?: string
           name?: string
           notes?: string | null
@@ -363,7 +363,7 @@ export type Database = {
           email: string
           expires_at: string
           id: string
-          invited_by: string
+          invited_by: string | null
           team_id: string
           token_hash: string
         }
@@ -374,7 +374,7 @@ export type Database = {
           email: string
           expires_at?: string
           id?: string
-          invited_by?: string
+          invited_by?: string | null
           team_id: string
           token_hash: string
         }
@@ -385,7 +385,7 @@ export type Database = {
           email?: string
           expires_at?: string
           id?: string
-          invited_by?: string
+          invited_by?: string | null
           team_id?: string
           token_hash?: string
         }
