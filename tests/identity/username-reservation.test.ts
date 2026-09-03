@@ -12,7 +12,8 @@ import { signIn, sql, uniqueEmail, uniqueUsername } from "../support/local-stack
 type Actor = Awaited<ReturnType<typeof signIn>>;
 type Call = PromiseLike<{ error: { code: string; message: string } | null }>;
 
-const account = (label: string) => signIn(uniqueEmail(label));
+/** Deliberately usernameless: this slice is about the accounts that have not claimed yet. */
+const account = (label: string) => signIn(uniqueEmail(label), false);
 const claim = (actor: Actor, username: string) => actor.client.rpc("claim_username", { p_username: username });
 const codeOf = async (call: Call): Promise<string> => (await call).error?.code ?? "ALLOWED";
 const reservations = async (where: string, values: unknown[]): Promise<number> =>

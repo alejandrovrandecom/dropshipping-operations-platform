@@ -59,8 +59,12 @@ export const expiredToken = (userId: string): string =>
 export const tamperedToken = (userId: string): string =>
   mintToken(userId, TOKEN_LIFETIME_SECONDS, `${env.JWT_SECRET}-tampered`);
 
-/** Creates a confirmed user and returns a client carrying that user's verified JWT. */
-export async function signIn(email: string): Promise<{ client: SupabaseClient; userId: string }> {
+/** Creates a confirmed user and returns a client carrying that user's verified JWT.
+ *
+ * The account claims a username on the way in, because the onboarding gate denies every other
+ * protected write until it holds one. Pass `false` for the usernameless account the gate is about. */
+export async function signIn(email: string, withUsername = true):
+Promise<{ client: SupabaseClient; userId: string; username: string | null }> {
   const password = "isolation-test-password";
   const client = anonClient();
   const { data, error } = await client.auth.signUp({ email, password });
@@ -68,7 +72,10 @@ export async function signIn(email: string): Promise<{ client: SupabaseClient; u
   await sql("update auth.users set email_confirmed_at = now() where id = $1", [data.user.id]);
   const { error: signInError } = await client.auth.signInWithPassword({ email, password });
   if (signInError) throw signInError;
-  return { client, userId: data.user.id };
+  if (!withUsername) return { client, userId: data.user.id, username: null };
+  const claimed = await client.rpc("claim_username", { p_username: uniqueUsername() });
+  if (claimed.error) throw claimed.error;
+  return { client, userId: data.user.id, username: claimed.data as string };
 }
 
 export const uniqueEmail = (label: string): string =>

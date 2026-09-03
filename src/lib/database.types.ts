@@ -479,9 +479,17 @@ export type Database = {
         Args: { p_launch_id: string; p_name: string; p_team_id: string }
         Returns: string
       }
+      has_username: { Args: never; Returns: boolean }
       hash_invitation_token: { Args: { token: string }; Returns: string }
       is_team_member: { Args: { target_team_id: string }; Returns: boolean }
       is_team_owner: { Args: { target_team_id: string }; Returns: boolean }
+      resolve_team_usernames: {
+        Args: { p_team_id: string }
+        Returns: {
+          user_id: string
+          username: string
+        }[]
+      }
       restore_launch: {
         Args: { p_launch_id: string }
         Returns: Database["public"]["Enums"]["launch_status"]
